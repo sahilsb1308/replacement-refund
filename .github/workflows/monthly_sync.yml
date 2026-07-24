@@ -1,0 +1,64 @@
+name: Monthly Refund/RTO Sheet Sync
+
+on:
+  # Runs at 10:00 PM IST (16:30 UTC) on the last day of each month
+  schedule:
+    - cron: "30 16 28-31 * *"   # fires on 28,29,30,31 — step below checks if it's truly last day
+
+  # Also allow manual trigger from GitHub UI or n8n webhook
+  workflow_dispatch:
+    inputs:
+      month:
+        description: "Month to sync (YYYY-MM). Leave blank for current month."
+        required: false
+        default: ""
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install requests gspread google-auth
+
+      - name: Skip if not last day of month (schedule only)
+        if: github.event_name == 'schedule'
+        run: |
+          python - <<'EOF'
+          import sys
+          from datetime import datetime, timezone, timedelta
+          import calendar
+          now = datetime.now(timezone.utc) + timedelta(hours=5, minutes=30)
+          last_day = calendar.monthrange(now.year, now.month)[1]
+          if now.day != last_day:
+              print(f"Today is {now.day}, last day is {last_day}. Skipping.")
+              sys.exit(1)
+          print(f"Today ({now.day}) is the last day of the month. Proceeding.")
+          EOF
+
+      - name: Write Google credentials file
+        run: echo '${{ secrets.GOOGLE_CREDS_JSON }}' > replacement-and-refund-8a7f8939a062.json
+
+      - name: Run sync
+        env:
+          SHOPIFY_TOKEN: ${{ secrets.SHOPIFY_TOKEN }}
+          GOOGLE_CREDS_FILE: replacement-and-refund-8a7f8939a062.json
+        run: |
+          MONTH="${{ github.event.inputs.month }}"
+          if [ -n "$MONTH" ]; then
+            python sync_to_sheet.py "$MONTH"
+          else
+            python sync_to_sheet.py
+          fi
+
+      - name: Clean up credentials
+        if: always()
+        run: rm -f replacement-and-refund-8a7f8939a062.json
