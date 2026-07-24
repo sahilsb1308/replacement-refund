@@ -467,6 +467,101 @@ def create_dashboard_charts(service, sh, ws_cd_id, mom_rows, sku_rows, sku_start
     print(f"  Dashboard charts created (MoM column + donut + SKU bar).")
 
 
+# ── Sheet polish ─────────────────────────────────────────────────────────────
+
+def polish_sheet(service, sh):
+    month_pattern = re.compile(r"^(January|February|March|April|May|June|July|August|September|October|November|December) \d{4}$")
+    worksheets    = sh.worksheets()
+    requests_list = []
+
+    # Tab order: Dashboard first, then months chronologically, then All Data, _ChartData last
+    def tab_sort_key(ws):
+        if ws.title == "Dashboard":   return (0, "")
+        if ws.title == "All Data":    return (2, "")
+        if ws.title == "_ChartData":  return (3, "")
+        if month_pattern.match(ws.title):
+            try:    return (1, datetime.strptime(ws.title, "%B %Y").strftime("%Y%m"))
+            except: return (1, ws.title)
+        return (4, ws.title)
+
+    sorted_tabs = sorted(worksheets, key=tab_sort_key)
+    for idx, ws in enumerate(sorted_tabs):
+        requests_list.append({"updateSheetProperties": {
+            "properties": {"sheetId": ws.id, "index": idx},
+            "fields": "index",
+        }})
+
+    # Hide _ChartData
+    cd_ws = next((w for w in worksheets if w.title == "_ChartData"), None)
+    if cd_ws:
+        requests_list.append({"updateSheetProperties": {
+            "properties": {"sheetId": cd_ws.id, "hidden": True},
+            "fields": "hidden",
+        }})
+
+    # For each data tab: freeze header row, auto-resize columns, banded rows
+    data_tabs = [w for w in worksheets if w.title != "Dashboard"]
+    GREY_LIGHT = {"red": 0.95, "green": 0.95, "blue": 0.95}
+    WHITE      = {"red": 1.0,  "green": 1.0,  "blue": 1.0}
+
+    for ws in data_tabs:
+        sid = ws.id
+        col_count = len(MONTH_HEADERS) if month_pattern.match(ws.title) else len(ALL_DATA_HEADERS)
+
+        # Freeze row 1
+        requests_list.append({"updateSheetProperties": {
+            "properties": {"sheetId": sid, "gridProperties": {"frozenRowCount": 1}},
+            "fields": "gridProperties.frozenRowCount",
+        }})
+
+        # Auto-resize all columns
+        requests_list.append({"autoResizeDimensions": {
+            "dimensions": {
+                "sheetId": sid,
+                "dimension": "COLUMNS",
+                "startIndex": 0,
+                "endIndex": col_count,
+            }
+        }})
+
+        # Alternating row band (skip if one already exists)
+        requests_list.append({"addBanding": {
+            "bandedRange": {
+                "bandedRangeId": sid * 10 + 1,
+                "range": {
+                    "sheetId": sid,
+                    "startRowIndex": 1,
+                    "startColumnIndex": 0,
+                    "endColumnIndex": col_count,
+                },
+                "rowProperties": {
+                    "headerColor":     {"red": 0.13, "green": 0.13, "blue": 0.13},
+                    "firstBandColor":  WHITE,
+                    "secondBandColor": GREY_LIGHT,
+                },
+            }
+        }})
+
+    # Execute — ignore "already exists" errors for banding
+    try:
+        service.spreadsheets().batchUpdate(
+            spreadsheetId=SHEET_ID,
+            body={"requests": requests_list},
+        ).execute()
+        print("  Tabs reordered, headers frozen, columns resized, banding applied.")
+    except Exception as e:
+        # Banding conflicts on re-runs; retry without addBanding
+        if "already exists" in str(e).lower() or "bandedRangeId" in str(e):
+            clean_requests = [r for r in requests_list if "addBanding" not in r]
+            service.spreadsheets().batchUpdate(
+                spreadsheetId=SHEET_ID,
+                body={"requests": clean_requests},
+            ).execute()
+            print("  Tabs reordered, headers frozen, columns resized (banding already set).")
+        else:
+            print(f"  Polish warning: {e}")
+
+
 # ── Entry point ───────────────────────────────────────────────────────────────
 
 def parse_month_arg(arg: str):
@@ -518,6 +613,10 @@ def main():
     ws_cd, mom_rows, sku_rows, sku_start = build_summary_data(sh)
     if ws_cd and mom_rows:
         create_dashboard_charts(service, sh, ws_cd.id, mom_rows, sku_rows, sku_start)
+
+    # ── 6. Polish the sheet ───────────────────────────────────────────────────
+    print("\nPolishing sheet...")
+    polish_sheet(service, sh)
 
     print(f"\nDone! https://docs.google.com/spreadsheets/d/{SHEET_ID}/edit")
 
