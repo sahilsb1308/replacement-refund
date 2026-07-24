@@ -3,7 +3,7 @@ name: Monthly Refund/RTO Sheet Sync
 on:
   # Runs at 10:00 PM IST (16:30 UTC) on the last day of each month
   schedule:
-    - cron: "30 16 28-31 * *"   # fires on 28,29,30,31 — step below checks if it's truly last day
+    - cron: "25 18 28-31 * *"   # 11:55 PM IST (18:25 UTC) on 28-31 — step below skips if not last day
 
   # Also allow manual trigger from GitHub UI or n8n webhook
   workflow_dispatch:
