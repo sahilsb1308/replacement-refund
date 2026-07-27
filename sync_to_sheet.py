@@ -263,28 +263,31 @@ def _col(name):
     return ALL_DATA_HEADERS.index(name)
 
 
+SKU_COL_START = 12   # col M (0-indexed) — SKU pivot lives in same rows as MoM, cols M onward
+
+
 def build_summary_data(sh):
     """
-    Write _ChartData with three sections, all sharing Month in col A so one slicer
-    controls all three Dashboard charts:
-      A) MoM table       (A1:G{n+1})       — Month | types | Total
-      B) Donut data      (J1:K6)            — Order Type | =SUBTOTAL() — recalcs on slicer filter
-      C) SKU wide pivot  (A{n+4}:P{n+3+n}) — Month | top-15 SKU codes
-         Rows = months; columns = SKU issue counts.  PERCENT_STACKED bar chart
-         shows each month as one bar, colour-split by which SKU caused what % of
-         that month's issues.  Slicer hides non-matching month rows → all 3 charts update.
+    Write _ChartData so a single slicer on col A controls all three Dashboard charts.
+    All data fits in rows 1..n (one row per month) — no separate SKU row-block needed:
+
+      Cols A–G  (rows 0..n): MoM table — Month | Refund | Returned | RTO | Undelivered | Replacement | Total
+      Cols J–K  (rows 0..5): Donut     — Order Type | =SUBTOTAL() recalcs on slicer filter
+      Cols M+   (rows 0..n): SKU pivot — top-15 SKU codes as column headers, counts as data
+
+    The slicer covers rows 0..n of col A with no gaps, so May/June/July always appear.
     """
     ws_all   = sh.worksheet("All Data")
     records  = ws_all.get_all_values()
     if len(records) < 2:
-        return None, [], [], 0
+        return None, [], 0
 
     header   = records[0]
     col_mon  = header.index("Month")
     col_type = header.index("Order Type")
-    col_sku1 = header.index("SKU 1");  col_prd1 = header.index("Product 1")
-    col_sku2 = header.index("SKU 2");  col_prd2 = header.index("Product 2")
-    col_sku3 = header.index("SKU 3");  col_prd3 = header.index("Product 3")
+    col_sku1 = header.index("SKU 1")
+    col_sku2 = header.index("SKU 2")
+    col_sku3 = header.index("SKU 3")
 
     ORDER_TYPES = ["Refund", "Returned", "RTO", "Undelivered", "Replacement"]
 
@@ -309,8 +312,7 @@ def build_summary_data(sh):
 
     n = len(mom_rows)
 
-    # ── SKU wide pivot — months as rows, top-15 SKUs as columns ─────────────
-    # Find top-15 SKUs by total issue count across all months
+    # ── SKU wide pivot — same rows as MoM, cols M onward ─────────────────────
     all_sku_counts = defaultdict(int)
     for row in records[1:]:
         t = row[col_type] if len(row) > col_type else ""
@@ -323,7 +325,6 @@ def build_summary_data(sh):
 
     top_skus = [s for s, _ in sorted(all_sku_counts.items(), key=lambda x: -x[1])[:15]]
 
-    # Count (month, SKU) issue occurrences
     sku_month_map = defaultdict(lambda: defaultdict(int))
     for row in records[1:]:
         m = row[col_mon]  if len(row) > col_mon  else ""
@@ -335,36 +336,35 @@ def build_summary_data(sh):
             if sku:
                 sku_month_map[m][sku] += 1
 
-    sku_pivot_header = ["Month"] + top_skus
-    sku_pivot_rows   = [
-        [m] + [sku_month_map[m].get(sku, 0) for sku in top_skus]
+    sku_pivot_data = [
+        [sku_month_map[m].get(sku, 0) for sku in top_skus]
         for m in sorted_months
     ]
 
     # ── Write _ChartData ──────────────────────────────────────────────────────
-    total_rows = n + 1 + len(sku_pivot_rows) + 10
-    ws_cd = get_or_create_tab(sh, "_ChartData", rows=max(total_rows, 100), cols=20)
+    ws_cd = get_or_create_tab(sh, "_ChartData", rows=max(n + 10, 20), cols=30)
     ws_cd.clear()
 
-    # A) MoM block at A1
+    # A) MoM cols A–G, rows 1..n+1
     ws_cd.update(values=[mom_header] + mom_rows, range_name="A1", value_input_option="USER_ENTERED")
 
-    # B) Donut at J1 — SUBTOTAL formulas reference MoM cols B:F, skip hidden rows on filter
+    # B) Donut cols J–K — SUBTOTAL recalcs when slicer hides MoM rows
     donut_data = [["Order Type", "Count"]] + [
         [t, f"=SUBTOTAL(9,{col}2:{col}{n + 1})"]
         for t, col in zip(ORDER_TYPES, ["B", "C", "D", "E", "F"])
     ]
     ws_cd.update(values=donut_data, range_name="J1", value_input_option="USER_ENTERED")
 
-    # C) SKU wide pivot — Month | SKU1 | SKU2 | …  (slicer hides month rows → SKU chart updates)
-    sku_start = n + 4   # 1-indexed sheet row for this section's header
-    ws_cd.update(values=[sku_pivot_header] + sku_pivot_rows, range_name=f"A{sku_start}", value_input_option="USER_ENTERED")
+    # C) SKU pivot cols M+, SAME rows as MoM — header in row 1, data in rows 2..n+1
+    # No separate row block → no gaps → slicer sees clean Month values with no blanks
+    ws_cd.update(values=[top_skus],      range_name="M1", value_input_option="USER_ENTERED")
+    ws_cd.update(values=sku_pivot_data,  range_name="M2", value_input_option="USER_ENTERED")
 
-    print(f"  _ChartData: {n} months, top {len(top_skus)} SKUs (wide pivot, slicer-responsive), donut via SUBTOTAL.")
-    return ws_cd, mom_rows, sku_pivot_rows, sku_start, len(top_skus)
+    print(f"  _ChartData: {n} months, top {len(top_skus)} SKUs in cols M+ (same rows, no gaps).")
+    return ws_cd, mom_rows, len(top_skus)
 
 
-def create_dashboard_charts(service, sh, ws_cd_id, mom_rows, sku_pivot_rows, sku_start, n_sku_series):
+def create_dashboard_charts(service, sh, ws_cd_id, mom_rows, n_sku_series):
     """
     Create charts on the Dashboard tab using the Sheets API.
     Skips creation if charts already exist on that sheet.
@@ -395,7 +395,7 @@ def create_dashboard_charts(service, sh, ws_cd_id, mom_rows, sku_pivot_rows, sku
         print(f"  Deleted {len(existing_charts)} existing chart(s) — rebuilding.")
 
     n_months = len(mom_rows)
-    n_skus   = len(sku_pivot_rows)
+    n_skus   = n_months   # SKU pivot has same number of rows as MoM
     cd_id    = ws_cd_id
 
     # Helper: column range spec
@@ -469,12 +469,11 @@ def create_dashboard_charts(service, sh, ws_cd_id, mom_rows, sku_pivot_rows, sku
         }},
     }}})
 
-    # ── Chart 3: Top-15 SKUs wide pivot — % of month's issues per SKU ────────
-    # Rows = months, cols = top-15 SKUs; PERCENT_STACKED shows each month as one
-    # 100% bar split by SKU share.  Slicer hides non-matching month rows so
-    # selecting May shows one bar = May's SKU breakdown, All = 3 bars.
-    sku_hdr_idx  = sku_start - 1              # 0-based row of SKU pivot header
-    sku_data_end = sku_hdr_idx + 1 + n_skus  # 0-based exclusive end (n_skus = n_months here)
+    # ── Chart 3: Top-15 SKUs — same rows as MoM, cols M onward ──────────────
+    # Domain = col A (Month), same rows 1..n_months.  Series = cols M, N, … (one per SKU).
+    # Row 0 col M+ has SKU names as series labels (headerCount=1).
+    # Slicer hides entire rows → MoM chart, donut, AND this SKU chart all update together.
+    sku_data_end = n_months + 1  # 0-indexed exclusive (rows 0..n_months inclusive)
     requests_list.append({"addChart": {"chart": {
         "spec": {
             "title": "Top 15 SKUs — Share of Issue Orders by Month (%)",
@@ -482,10 +481,10 @@ def create_dashboard_charts(service, sh, ws_cd_id, mom_rows, sku_pivot_rows, sku
                 "chartType": "BAR",
                 "stackedType": "PERCENT_STACKED",
                 "legendPosition": "RIGHT_LEGEND",
-                "domains": [{"domain": {"sourceRange": {"sources": [col_range(cd_id, sku_hdr_idx + 1, sku_data_end, 0)]}}}],
+                "domains": [{"domain": {"sourceRange": {"sources": [col_range(cd_id, 1, sku_data_end, 0)]}}}],
                 "series": [
                     {
-                        "series": {"sourceRange": {"sources": [col_range(cd_id, sku_hdr_idx, sku_data_end, i + 1)]}},
+                        "series": {"sourceRange": {"sources": [col_range(cd_id, 0, sku_data_end, SKU_COL_START + i)]}},
                         "targetAxis": "BOTTOM_AXIS",
                     }
                     for i in range(n_sku_series)
@@ -508,7 +507,7 @@ def create_dashboard_charts(service, sh, ws_cd_id, mom_rows, sku_pivot_rows, sku
 
 # ── Dashboard slicer ─────────────────────────────────────────────────────────
 
-def create_month_slicer(service, sh, ws_cd_id, n_months, sku_start, n_sku_pivot_rows):
+def create_month_slicer(service, sh, ws_cd_id, n_months):
     """Add (or refresh) a Month slicer on Dashboard connected to _ChartData."""
     try:
         ws_dash = sh.worksheet("Dashboard")
@@ -538,19 +537,18 @@ def create_month_slicer(service, sh, ws_cd_id, n_months, sku_start, n_sku_pivot_
         "fields": "hidden",
     }})
 
-    # Slicer covers header + MoM rows + SKU pivot rows — all have Month in col A.
-    # Must include row 0 (MoM header) so Sheets labels the column correctly.
-    # sku_start (1-indexed): SKU header row; sku_start+n_sku_pivot_rows = end of SKU data.
-    sku_pivot_end = sku_start + n_sku_pivot_rows   # 0-indexed exclusive end of SKU pivot data
+    # Slicer covers rows 0..n_months (header + one row per month) of col A only.
+    # No gaps, no duplicate Month headers — all three months appear cleanly.
+    # SKU pivot is in the SAME rows (cols M+) so it filters automatically.
     requests.append({"addSlicer": {
         "slicer": {
             "spec": {
                 "dataRange": {
                     "sheetId":          ws_cd_id,
-                    "startRowIndex":    0,           # include MoM header row so column is labelled
-                    "endRowIndex":      sku_pivot_end,
+                    "startRowIndex":    0,           # include header so Sheets labels the column
+                    "endRowIndex":      n_months + 1,
                     "startColumnIndex": 0,
-                    "endColumnIndex":   7,
+                    "endColumnIndex":   1,           # only col A needed for Month filter
                 },
                 "columnIndex": 0,           # Month column
                 "title": "Filter by Month",
@@ -741,10 +739,10 @@ def main():
 
     # ── 5. Rebuild _ChartData + create Dashboard charts ───────────────────────
     print("\nUpdating chart data...")
-    ws_cd, mom_rows, sku_pivot_rows, sku_start, n_sku_series = build_summary_data(sh)
+    ws_cd, mom_rows, n_sku_series = build_summary_data(sh)
     if ws_cd and mom_rows:
-        create_dashboard_charts(service, sh, ws_cd.id, mom_rows, sku_pivot_rows, sku_start, n_sku_series)
-        create_month_slicer(service, sh, ws_cd.id, len(mom_rows), sku_start, len(sku_pivot_rows))
+        create_dashboard_charts(service, sh, ws_cd.id, mom_rows, n_sku_series)
+        create_month_slicer(service, sh, ws_cd.id, len(mom_rows))
 
     # ── 6. Polish the sheet ───────────────────────────────────────────────────
     print("\nPolishing sheet...")
