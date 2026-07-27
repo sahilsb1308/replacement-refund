@@ -518,6 +518,14 @@ def create_month_slicer(service, sh, ws_cd_id, n_months, sku_start, n_sku_pivot_
         for s in existing_slicers
     ]
 
+    # Unhide _ChartData in the SAME batch as slicer creation — the slicer snapshots
+    # distinct filter values at creation time, so the source sheet must be visible now,
+    # not just later when polish_sheet runs.
+    requests.append({"updateSheetProperties": {
+        "properties": {"sheetId": ws_cd_id, "hidden": False},
+        "fields": "hidden",
+    }})
+
     # Slicer covers MoM data rows only (rows 1..n_months, 0-indexed, skipping header at row 0)
     # SKU rows are aggregate (no Month col) so not included — donut + MoM chart still filter
     requests.append({"addSlicer": {
