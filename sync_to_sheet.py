@@ -526,14 +526,15 @@ def create_month_slicer(service, sh, ws_cd_id, n_months, sku_start, n_sku_pivot_
         "fields": "hidden",
     }})
 
-    # Slicer covers MoM data rows only (rows 1..n_months, 0-indexed, skipping header at row 0)
-    # SKU rows are aggregate (no Month col) so not included — donut + MoM chart still filter
+    # Slicer covers header + MoM data rows (rows 0..n_months, 0-indexed).
+    # Must include row 0 (header) so Sheets can label the column correctly;
+    # columnIndex:0 then tells it to filter by the Month column.
     requests.append({"addSlicer": {
         "slicer": {
             "spec": {
                 "dataRange": {
                     "sheetId":          ws_cd_id,
-                    "startRowIndex":    1,           # skip MoM header row
+                    "startRowIndex":    0,           # include header row
                     "endRowIndex":      n_months + 1,
                     "startColumnIndex": 0,
                     "endColumnIndex":   7,
