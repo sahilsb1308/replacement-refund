@@ -64,7 +64,7 @@ query FetchOrders($query: String!, $after: String) {
     pageInfo { hasNextPage endCursor }
     edges {
       node {
-        name createdAt tags
+        name createdAt tags note
         displayFinancialStatus displayFulfillmentStatus
         totalPriceSet    { shopMoney { amount } }
         totalRefundedSet { shopMoney { amount } }
@@ -187,7 +187,7 @@ def build_row(node):
         node.get("displayFinancialStatus", ""),
         node.get("displayFulfillmentStatus", ""),
         actions_taken(tags),                                 # col 6 – Actions Taken
-        "",                                                  # col 7 – Notes (manual fill)
+        node.get("note") or "Reason: \nSKU Code: \nClone Order ID: ",  # col 7 – Shopify note or template
         f"{customer.get('firstName') or ''} {customer.get('lastName') or ''}".strip(),
         customer.get("phone", "") or "",
         addr.get("city", "")     or "",
@@ -226,6 +226,11 @@ def write_tab(ws, headers, rows):
         "textFormat": {"bold": True, "foregroundColor": {"red": 1, "green": 1, "blue": 1}},
         "backgroundColor": {"red": 0.13, "green": 0.13, "blue": 0.13},
     })
+    # Wrap Notes column so the 3-line template displays correctly
+    # Notes is col H in month tabs, col I in All Data (which has "Month" prepended)
+    notes_col = "I" if "Month" in headers else "H"
+    if rows:
+        ws.format(f"{notes_col}2:{notes_col}{len(rows) + 1}", {"wrapStrategy": "WRAP"})
 
 
 def rebuild_all_data(sh):
