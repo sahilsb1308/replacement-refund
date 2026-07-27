@@ -267,9 +267,9 @@ def build_summary_data(sh):
     """
     Write _ChartData with all three sections sharing Month in col A so one slicer
     controls all three Dashboard charts:
-      A) MoM table  (A1:G{n+1})   — Month | types | Total
-      B) Donut data (J1:K6)        — Order Type | =SUBTOTAL() — recalcs on slicer filter
-      C) SKU table  (A{n+2}:I{end}) — Month | SKU | Product | types | Total (per-month rows)
+      A) MoM table       (A1:G{n+1})      — Month | types | Total
+      B) Donut data      (J1:K6)           — Order Type | =SUBTOTAL() — recalcs on slicer filter
+      C) SKU wide pivot  (A{n+4}:P{n+3+n}) — Month | SKU1 | SKU2 | … | SKU15
     """
     ws_all   = sh.worksheet("All Data")
     records  = ws_all.get_all_values()
@@ -306,37 +306,40 @@ def build_summary_data(sh):
 
     n = len(mom_rows)
 
-    # ── SKU pivot — per-month rows so the slicer can filter them ─────────────
-    sku_all      = defaultdict(lambda: {"product": "", **{t: 0 for t in ORDER_TYPES}})
-    sku_by_month = defaultdict(lambda: defaultdict(lambda: {"product": "", **{t: 0 for t in ORDER_TYPES}}))
-
+    # ── SKU wide pivot — months as rows, top-15 SKUs as columns ─────────────
+    # First find top-15 SKUs by total issue count
+    all_sku_counts = defaultdict(int)
     for row in records[1:]:
-        m = row[col_mon]  if len(row) > col_mon  else ""
         t = row[col_type] if len(row) > col_type else ""
         if t not in ORDER_TYPES:
             continue
-        for sku_col, prd_col in [(col_sku1, col_prd1), (col_sku2, col_prd2), (col_sku3, col_prd3)]:
+        for sku_col in [col_sku1, col_sku2, col_sku3]:
             sku = row[sku_col] if len(row) > sku_col else ""
-            prd = row[prd_col] if len(row) > prd_col else ""
             if sku:
-                sku_all[sku]["product"] = prd or sku_all[sku]["product"]
-                sku_all[sku][t] += 1
-                if m:
-                    sku_by_month[m][sku]["product"] = prd or sku_by_month[m][sku]["product"]
-                    sku_by_month[m][sku][t] += 1
+                all_sku_counts[sku] += 1
 
-    top_25 = sorted(sku_all, key=lambda s: -sum(sku_all[s][t] for t in ORDER_TYPES))[:25]
+    top_skus = [s for s, _ in sorted(all_sku_counts.items(), key=lambda x: -x[1])[:15]]
 
-    # One row per (month × SKU) — col A = Month so slicer hides non-matching rows
-    sku_rows = []
-    for m in sorted_months:
-        for sku in top_25:
-            d      = sku_by_month[m].get(sku, {"product": sku_all.get(sku, {}).get("product", ""), **{t: 0 for t in ORDER_TYPES}})
-            counts = [d.get(t, 0) for t in ORDER_TYPES]
-            sku_rows.append([m, sku, d["product"]] + counts + [sum(counts)])
+    # Build month × SKU count map
+    sku_month_map = defaultdict(lambda: defaultdict(int))
+    for row in records[1:]:
+        m = row[col_mon]  if len(row) > col_mon  else ""
+        t = row[col_type] if len(row) > col_type else ""
+        if not m or t not in ORDER_TYPES:
+            continue
+        for sku_col in [col_sku1, col_sku2, col_sku3]:
+            sku = row[sku_col] if len(row) > sku_col else ""
+            if sku:
+                sku_month_map[m][sku] += 1
+
+    sku_pivot_header = ["Month"] + top_skus
+    sku_pivot_rows   = [
+        [m] + [sku_month_map[m].get(sku, 0) for sku in top_skus]
+        for m in sorted_months
+    ]
 
     # ── Write _ChartData ──────────────────────────────────────────────────────
-    total_rows = n + 1 + len(sku_rows) + 10
+    total_rows = n + 1 + len(sku_pivot_rows) + 10
     ws_cd = get_or_create_tab(sh, "_ChartData", rows=max(total_rows, 100), cols=20)
     ws_cd.clear()
 
@@ -350,16 +353,16 @@ def build_summary_data(sh):
     ]
     ws_cd.update(values=donut_data, range_name="J1", value_input_option="USER_ENTERED")
 
-    # C) SKU block immediately after MoM — no gap so slicer sees no blanks
-    # Columns: Month | SKU | Product | Refund | Returned | RTO | Undelivered | Replacement | Total
-    sku_start = n + 2   # 1-indexed Sheets row
-    ws_cd.update(values=sku_rows, range_name=f"A{sku_start}", value_input_option="USER_ENTERED")
+    # C) SKU wide pivot — Month | SKU1 | SKU2 | … (months as rows, SKUs as columns)
+    # Slicer hides Month rows here too, so chart updates when filtered
+    sku_start = n + 4   # 1-indexed sheet row for this section's header
+    ws_cd.update(values=[sku_pivot_header] + sku_pivot_rows, range_name=f"A{sku_start}", value_input_option="USER_ENTERED")
 
-    print(f"  _ChartData: {n} months, {len(sku_rows)} month×SKU rows, donut via SUBTOTAL.")
-    return ws_cd, mom_rows, sku_rows, sku_start
+    print(f"  _ChartData: {n} months, top {len(top_skus)} SKUs (wide pivot), donut via SUBTOTAL.")
+    return ws_cd, mom_rows, sku_pivot_rows, sku_start, len(top_skus)
 
 
-def create_dashboard_charts(service, sh, ws_cd_id, mom_rows, sku_rows, sku_start):
+def create_dashboard_charts(service, sh, ws_cd_id, mom_rows, sku_pivot_rows, sku_start, n_sku_series):
     """
     Create charts on the Dashboard tab using the Sheets API.
     Skips creation if charts already exist on that sheet.
@@ -390,7 +393,7 @@ def create_dashboard_charts(service, sh, ws_cd_id, mom_rows, sku_rows, sku_start
         print(f"  Deleted {len(existing_charts)} existing chart(s) — rebuilding.")
 
     n_months = len(mom_rows)
-    n_skus   = len(sku_rows)
+    n_skus   = len(sku_pivot_rows)
     cd_id    = ws_cd_id
 
     # Helper: column range spec
@@ -464,27 +467,28 @@ def create_dashboard_charts(service, sh, ws_cd_id, mom_rows, sku_rows, sku_start
         }},
     }}})
 
-    # ── Chart 3: Top 25 SKUs Bar ──────────────────────────────────────────────
-    # SKU data now has Month in col 0, SKU in col 1, Product in col 2, types in cols 3-7
-    sku_start_idx = sku_start - 1                           # 0-based
-    sku_end_idx   = sku_start_idx + n_skus
+    # ── Chart 3: Top-15 SKUs — % breakdown per month ─────────────────────────
+    # Wide pivot: header at sku_start-1 (0-based), data rows below
+    # Domain = Month col (0), Series = each SKU col (1..n_sku_series)
+    # Slicer hides non-matching month rows here → chart updates on filter
+    sku_hdr_idx  = sku_start - 1              # 0-based row of SKU pivot header
+    sku_data_end = sku_hdr_idx + 1 + n_skus  # 0-based exclusive end of data rows
     requests_list.append({"addChart": {"chart": {
         "spec": {
-            "title": "Top 25 SKUs — Issue Type Breakdown (%)",
+            "title": "Top SKUs — Issue Count by Month (%)",
             "basicChart": {
                 "chartType": "BAR",
                 "stackedType": "PERCENT_STACKED",
-                "legendPosition": "BOTTOM_LEGEND",
-                "domains": [{"domain": {"sourceRange": {"sources": [col_range(cd_id, sku_start_idx, sku_end_idx, 1)]}}}],
+                "legendPosition": "RIGHT_LEGEND",
+                "domains": [{"domain": {"sourceRange": {"sources": [col_range(cd_id, sku_hdr_idx + 1, sku_data_end, 0)]}}}],
                 "series": [
                     {
-                        "series": {"sourceRange": {"sources": [col_range(cd_id, sku_start_idx, sku_end_idx, i + 3)]}},
+                        "series": {"sourceRange": {"sources": [col_range(cd_id, sku_hdr_idx, sku_data_end, i + 1)]}},
                         "targetAxis": "BOTTOM_AXIS",
-                        "color": COLORS[i],
                     }
-                    for i in range(len(ORDER_TYPES))
+                    for i in range(n_sku_series)
                 ],
-                "headerCount": 0,
+                "headerCount": 1,
             },
         },
         "position": {"overlayPosition": {
@@ -502,7 +506,7 @@ def create_dashboard_charts(service, sh, ws_cd_id, mom_rows, sku_rows, sku_start
 
 # ── Dashboard slicer ─────────────────────────────────────────────────────────
 
-def create_month_slicer(service, sh, ws_cd_id, n_months, sku_start, n_sku_rows):
+def create_month_slicer(service, sh, ws_cd_id, n_months, sku_start, n_sku_pivot_rows):
     """Add (or refresh) a Month slicer on Dashboard connected to _ChartData."""
     try:
         ws_dash = sh.worksheet("Dashboard")
@@ -524,16 +528,17 @@ def create_month_slicer(service, sh, ws_cd_id, n_months, sku_start, n_sku_rows):
         for s in existing_slicers
     ]
 
-    # Cover MoM rows + SKU rows — both have Month in col A, no gap between them
-    # Skip row 0 (MoM header) so "Month" text doesn't appear as a filter option
-    sku_end_idx = (sku_start - 1) + n_sku_rows   # 0-indexed end of SKU data
+    # Cover MoM data rows + SKU wide-pivot rows — both have Month in col A
+    # Skip row 0 (MoM header) so the text "Month" doesn't appear as a filter value
+    # sku_start (1-indexed): header of SKU section; data rows follow immediately after
+    sku_data_end_idx = sku_start + n_sku_pivot_rows  # 0-indexed exclusive end of SKU pivot data
     requests.append({"addSlicer": {
         "slicer": {
             "spec": {
                 "dataRange": {
                     "sheetId":          ws_cd_id,
-                    "startRowIndex":    1,           # skip MoM header row
-                    "endRowIndex":      sku_end_idx,
+                    "startRowIndex":    1,               # skip MoM header row
+                    "endRowIndex":      sku_data_end_idx,
                     "startColumnIndex": 0,
                     "endColumnIndex":   9,
                 },
@@ -726,10 +731,10 @@ def main():
 
     # ── 5. Rebuild _ChartData + create Dashboard charts ───────────────────────
     print("\nUpdating chart data...")
-    ws_cd, mom_rows, sku_rows, sku_start = build_summary_data(sh)
+    ws_cd, mom_rows, sku_pivot_rows, sku_start, n_sku_series = build_summary_data(sh)
     if ws_cd and mom_rows:
-        create_dashboard_charts(service, sh, ws_cd.id, mom_rows, sku_rows, sku_start)
-        create_month_slicer(service, sh, ws_cd.id, len(mom_rows), sku_start, len(sku_rows))
+        create_dashboard_charts(service, sh, ws_cd.id, mom_rows, sku_pivot_rows, sku_start, n_sku_series)
+        create_month_slicer(service, sh, ws_cd.id, len(mom_rows), sku_start, len(sku_pivot_rows))
 
     # ── 6. Polish the sheet ───────────────────────────────────────────────────
     print("\nPolishing sheet...")
