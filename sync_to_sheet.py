@@ -265,27 +265,29 @@ def _col(name):
 
 def build_summary_data(sh):
     """
-    Write a hidden _ChartData tab with two pivot tables:
-      A) MoM summary  — Month | Refund | Returned | RTO | Undelivered | Replacement | Total
-      B) Top 20 SKUs  — SKU | Product | Refund | Returned | RTO | Undelivered | Total
-    Returns (ws_chart, mom_rows, sku_rows)
+    Write _ChartData with all three sections sharing Month in col A so one slicer
+    controls all three Dashboard charts:
+      A) MoM table  (A1:G{n+1})   — Month | types | Total
+      B) Donut data (J1:K6)        — Order Type | =SUBTOTAL() — recalcs on slicer filter
+      C) SKU table  (A{n+2}:I{end}) — Month | SKU | Product | types | Total (per-month rows)
     """
     ws_all   = sh.worksheet("All Data")
     records  = ws_all.get_all_values()
     if len(records) < 2:
-        return None, [], []
+        return None, [], [], 0
 
-    header  = records[0]
+    header   = records[0]
     col_mon  = header.index("Month")
     col_type = header.index("Order Type")
-    col_sku1 = header.index("SKU 1")
-    col_prd1 = header.index("Product 1")
-    col_sku2 = header.index("SKU 2")
-    col_prd2 = header.index("Product 2")
-    col_sku3 = header.index("SKU 3")
-    col_prd3 = header.index("Product 3")
+    col_sku1 = header.index("SKU 1");  col_prd1 = header.index("Product 1")
+    col_sku2 = header.index("SKU 2");  col_prd2 = header.index("Product 2")
+    col_sku3 = header.index("SKU 3");  col_prd3 = header.index("Product 3")
 
     ORDER_TYPES = ["Refund", "Returned", "RTO", "Undelivered", "Replacement"]
+
+    def month_sort_key(m):
+        try:    return datetime.strptime(m, "%B %Y")
+        except: return datetime.min
 
     # ── MoM pivot ────────────────────────────────────────────────────────────
     mom = defaultdict(lambda: defaultdict(int))
@@ -295,13 +297,6 @@ def build_summary_data(sh):
         if m and t:
             mom[m][t] += 1
 
-    # Sort months chronologically
-    def month_sort_key(m):
-        try:
-            return datetime.strptime(m, "%B %Y")
-        except Exception:
-            return datetime.min
-
     sorted_months = sorted(mom.keys(), key=month_sort_key)
     mom_header = ["Month"] + ORDER_TYPES + ["Total"]
     mom_rows   = []
@@ -309,9 +304,14 @@ def build_summary_data(sh):
         counts = [mom[m].get(t, 0) for t in ORDER_TYPES]
         mom_rows.append([m] + counts + [sum(counts)])
 
-    # ── SKU pivot ────────────────────────────────────────────────────────────
-    sku_data = defaultdict(lambda: {"product": "", **{t: 0 for t in ORDER_TYPES}})
+    n = len(mom_rows)
+
+    # ── SKU pivot — per-month rows so the slicer can filter them ─────────────
+    sku_all      = defaultdict(lambda: {"product": "", **{t: 0 for t in ORDER_TYPES}})
+    sku_by_month = defaultdict(lambda: defaultdict(lambda: {"product": "", **{t: 0 for t in ORDER_TYPES}}))
+
     for row in records[1:]:
+        m = row[col_mon]  if len(row) > col_mon  else ""
         t = row[col_type] if len(row) > col_type else ""
         if t not in ORDER_TYPES:
             continue
@@ -319,29 +319,43 @@ def build_summary_data(sh):
             sku = row[sku_col] if len(row) > sku_col else ""
             prd = row[prd_col] if len(row) > prd_col else ""
             if sku:
-                sku_data[sku]["product"] = prd or sku_data[sku]["product"]
-                sku_data[sku][t] += 1
+                sku_all[sku]["product"] = prd or sku_all[sku]["product"]
+                sku_all[sku][t] += 1
+                if m:
+                    sku_by_month[m][sku]["product"] = prd or sku_by_month[m][sku]["product"]
+                    sku_by_month[m][sku][t] += 1
 
-    sku_header = ["SKU", "Product"] + ORDER_TYPES + ["Total"]
-    sku_rows   = []
-    for sku, d in sku_data.items():
-        counts = [d.get(t, 0) for t in ORDER_TYPES]
-        sku_rows.append([sku, d["product"]] + counts + [sum(counts)])
-    sku_rows.sort(key=lambda r: r[-1], reverse=True)
-    sku_rows = sku_rows[:25]  # top 25 SKUs
+    top_25 = sorted(sku_all, key=lambda s: -sum(sku_all[s][t] for t in ORDER_TYPES))[:25]
 
-    # ── Write _ChartData tab ─────────────────────────────────────────────────
-    ws_cd = get_or_create_tab(sh, "_ChartData", rows=200, cols=20)
+    # One row per (month × SKU) — col A = Month so slicer hides non-matching rows
+    sku_rows = []
+    for m in sorted_months:
+        for sku in top_25:
+            d      = sku_by_month[m].get(sku, {"product": sku_all.get(sku, {}).get("product", ""), **{t: 0 for t in ORDER_TYPES}})
+            counts = [d.get(t, 0) for t in ORDER_TYPES]
+            sku_rows.append([m, sku, d["product"]] + counts + [sum(counts)])
+
+    # ── Write _ChartData ──────────────────────────────────────────────────────
+    total_rows = n + 1 + len(sku_rows) + 10
+    ws_cd = get_or_create_tab(sh, "_ChartData", rows=max(total_rows, 100), cols=20)
     ws_cd.clear()
 
-    # MoM block starting at A1
+    # A) MoM block at A1
     ws_cd.update(values=[mom_header] + mom_rows, range_name="A1", value_input_option="USER_ENTERED")
 
-    # SKU block starting at row len(mom_rows)+4  (leave a gap)
-    sku_start = len(mom_rows) + 4
-    ws_cd.update(values=[sku_header] + sku_rows, range_name=f"A{sku_start}", value_input_option="USER_ENTERED")
+    # B) Donut at J1 — SUBTOTAL formulas reference MoM cols B:F, skip hidden rows on filter
+    donut_data = [["Order Type", "Count"]] + [
+        [t, f"=SUBTOTAL(9,{col}2:{col}{n + 1})"]
+        for t, col in zip(ORDER_TYPES, ["B", "C", "D", "E", "F"])
+    ]
+    ws_cd.update(values=donut_data, range_name="J1", value_input_option="USER_ENTERED")
 
-    print(f"  _ChartData written — {len(mom_rows)} months, {len(sku_rows)} SKUs.")
+    # C) SKU block immediately after MoM — no gap so slicer sees no blanks
+    # Columns: Month | SKU | Product | Refund | Returned | RTO | Undelivered | Replacement | Total
+    sku_start = n + 2   # 1-indexed Sheets row
+    ws_cd.update(values=sku_rows, range_name=f"A{sku_start}", value_input_option="USER_ENTERED")
+
+    print(f"  _ChartData: {n} months, {len(sku_rows)} month×SKU rows, donut via SUBTOTAL.")
     return ws_cd, mom_rows, sku_rows, sku_start
 
 
@@ -429,25 +443,17 @@ def create_dashboard_charts(service, sh, ws_cd_id, mom_rows, sku_rows, sku_start
     }}})
 
     # ── Chart 2: Order Type Donut ─────────────────────────────────────────────
-    # Aggregate totals per type from mom_rows
-    type_totals = [sum(r[i + 1] for r in mom_rows) for i in range(len(ORDER_TYPES))]
-    # Write a tiny pivot at column J (index 9) in _ChartData for the donut
-    donut_data = [["Order Type", "Count"]] + [[t, v] for t, v in zip(ORDER_TYPES, type_totals)]
-    donut_start_col = 9  # column J
-    sh.worksheet("_ChartData").update(
-        values=donut_data,
-        range_name=f"J1",
-        value_input_option="USER_ENTERED"
-    )
-
-    n_types = len(ORDER_TYPES)
+    # Data is in J:K of _ChartData — SUBTOTAL formulas written by build_summary_data
+    # They recalculate automatically when the slicer hides/shows MoM rows
+    n_types         = len(ORDER_TYPES)
+    donut_start_col = 9   # col J (0-indexed)
     requests_list.append({"addChart": {"chart": {
         "spec": {
-            "title": "Overall Order Type Breakdown",
+            "title": "Order Type Breakdown",
             "pieChart": {
                 "legendPosition": "RIGHT_LEGEND",
                 "pieHole": 0.4,
-                # rows 1..n_types — skip the header row so values are numeric
+                # J2:J6 = labels, K2:K6 = SUBTOTAL values
                 "domain": {"sourceRange": {"sources": [col_range(cd_id, 1, 1 + n_types, donut_start_col)]}},
                 "series": {"sourceRange": {"sources": [col_range(cd_id, 1, 1 + n_types, donut_start_col + 1)]}},
             },
@@ -459,18 +465,20 @@ def create_dashboard_charts(service, sh, ws_cd_id, mom_rows, sku_rows, sku_start
     }}})
 
     # ── Chart 3: Top 25 SKUs Bar ──────────────────────────────────────────────
-    sku_data_rows = (sku_start, sku_start + n_skus)   # 0-based row indices in sheet
+    # SKU data now has Month in col 0, SKU in col 1, Product in col 2, types in cols 3-7
+    sku_start_idx = sku_start - 1                           # 0-based
+    sku_end_idx   = sku_start_idx + n_skus
     requests_list.append({"addChart": {"chart": {
         "spec": {
-            "title": "Top 25 SKUs by Total Concerns",
+            "title": "Top 25 SKUs — Issue Type Breakdown (%)",
             "basicChart": {
                 "chartType": "BAR",
-                "stackedType": "STACKED",
+                "stackedType": "PERCENT_STACKED",
                 "legendPosition": "BOTTOM_LEGEND",
-                "domains": [{"domain": {"sourceRange": {"sources": [col_range(cd_id, *sku_data_rows, 0)]}}}],
+                "domains": [{"domain": {"sourceRange": {"sources": [col_range(cd_id, sku_start_idx, sku_end_idx, 1)]}}}],
                 "series": [
                     {
-                        "series": {"sourceRange": {"sources": [col_range(cd_id, *sku_data_rows, i + 2)]}},
+                        "series": {"sourceRange": {"sources": [col_range(cd_id, sku_start_idx, sku_end_idx, i + 3)]}},
                         "targetAxis": "BOTTOM_AXIS",
                         "color": COLORS[i],
                     }
@@ -494,7 +502,7 @@ def create_dashboard_charts(service, sh, ws_cd_id, mom_rows, sku_rows, sku_start
 
 # ── Dashboard slicer ─────────────────────────────────────────────────────────
 
-def create_month_slicer(service, sh, ws_cd_id, n_months):
+def create_month_slicer(service, sh, ws_cd_id, n_months, sku_start, n_sku_rows):
     """Add (or refresh) a Month slicer on Dashboard connected to _ChartData."""
     try:
         ws_dash = sh.worksheet("Dashboard")
@@ -516,16 +524,18 @@ def create_month_slicer(service, sh, ws_cd_id, n_months):
         for s in existing_slicers
     ]
 
-    # Slicer connects to the MoM block in _ChartData (col A = Month)
+    # Cover MoM rows + SKU rows — both have Month in col A, no gap between them
+    # Skip row 0 (MoM header) so "Month" text doesn't appear as a filter option
+    sku_end_idx = (sku_start - 1) + n_sku_rows   # 0-indexed end of SKU data
     requests.append({"addSlicer": {
         "slicer": {
             "spec": {
                 "dataRange": {
-                    "sheetId": ws_cd_id,
-                    "startRowIndex":    0,
-                    "endRowIndex":      n_months + 1,
+                    "sheetId":          ws_cd_id,
+                    "startRowIndex":    1,           # skip MoM header row
+                    "endRowIndex":      sku_end_idx,
                     "startColumnIndex": 0,
-                    "endColumnIndex":   7,
+                    "endColumnIndex":   9,
                 },
                 "columnIndex": 0,           # Month column
                 "title": "Filter by Month",
@@ -719,7 +729,7 @@ def main():
     ws_cd, mom_rows, sku_rows, sku_start = build_summary_data(sh)
     if ws_cd and mom_rows:
         create_dashboard_charts(service, sh, ws_cd.id, mom_rows, sku_rows, sku_start)
-        create_month_slicer(service, sh, ws_cd.id, len(mom_rows))
+        create_month_slicer(service, sh, ws_cd.id, len(mom_rows), sku_start, len(sku_rows))
 
     # ── 6. Polish the sheet ───────────────────────────────────────────────────
     print("\nPolishing sheet...")
