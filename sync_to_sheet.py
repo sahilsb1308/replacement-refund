@@ -481,7 +481,10 @@ def create_dashboard_charts(service, sh, ws_cd_id, mom_rows, n_sku_series):
                 "chartType": "BAR",
                 "stackedType": "PERCENT_STACKED",
                 "legendPosition": "RIGHT_LEGEND",
-                "domains": [{"domain": {"sourceRange": {"sources": [col_range(cd_id, 1, sku_data_end, 0)]}}}],
+                # Both domain and series start at row 0 with headerCount=1.
+                # Row 0 = header ("Month" in col A, SKU names in cols M+).
+                # Rows 1..n = May/June/July data — all three bars appear.
+                "domains": [{"domain": {"sourceRange": {"sources": [col_range(cd_id, 0, sku_data_end, 0)]}}}],
                 "series": [
                     {
                         "series": {"sourceRange": {"sources": [col_range(cd_id, 0, sku_data_end, SKU_COL_START + i)]}},
@@ -537,18 +540,19 @@ def create_month_slicer(service, sh, ws_cd_id, n_months):
         "fields": "hidden",
     }})
 
-    # Slicer covers rows 0..n_months (header + one row per month) of col A only.
-    # No gaps, no duplicate Month headers — all three months appear cleanly.
+    # Slicer covers data rows only (skip row 0 header) — startRowIndex:1.
+    # Including the header (row 0) conflicts with Sheets' own column-label detection
+    # and causes the dropdown to show no values. startRowIndex:1 works correctly.
     # SKU pivot is in the SAME rows (cols M+) so it filters automatically.
     requests.append({"addSlicer": {
         "slicer": {
             "spec": {
                 "dataRange": {
                     "sheetId":          ws_cd_id,
-                    "startRowIndex":    0,           # include header so Sheets labels the column
+                    "startRowIndex":    1,           # skip header row — avoids empty-dropdown bug
                     "endRowIndex":      n_months + 1,
                     "startColumnIndex": 0,
-                    "endColumnIndex":   1,           # only col A needed for Month filter
+                    "endColumnIndex":   7,           # include all MoM cols so Sheets sees context
                 },
                 "columnIndex": 0,           # Month column
                 "title": "Filter by Month",
