@@ -511,50 +511,46 @@ def create_dashboard_charts(service, sh, ws_cd_id, mom_rows, n_sku_series):
 # ── Dashboard slicer ─────────────────────────────────────────────────────────
 
 def create_month_slicer(service, sh, ws_cd_id, n_months):
-    """Add (or refresh) a Month slicer on Dashboard connected to _ChartData."""
+    """Add (or refresh) a Month slicer placed ON _ChartData (same sheet as data).
+    Placing the slicer on the same sheet as its dataRange is the only way Google Sheets
+    populates the filter-value dropdown. Dashboard charts still reference _ChartData rows
+    and update automatically when the slicer hides rows."""
     try:
         ws_dash = sh.worksheet("Dashboard")
+        dash_id = ws_dash.id
     except gspread.exceptions.WorksheetNotFound:
-        return
+        dash_id = None
 
-    dash_id = ws_dash.id
-
-    # Delete any existing slicers on Dashboard
+    # Delete existing slicers on BOTH Dashboard (old location) and _ChartData
     spreadsheet = service.spreadsheets().get(spreadsheetId=SHEET_ID).execute()
-    existing_slicers = []
+    requests = []
+    deleted = 0
     for sheet in spreadsheet.get("sheets", []):
-        if sheet["properties"]["sheetId"] == dash_id:
-            existing_slicers = sheet.get("slicers", [])
-            break
+        sid = sheet["properties"]["sheetId"]
+        if sid in (dash_id, ws_cd_id):
+            for s in sheet.get("slicers", []):
+                requests.append({"deleteEmbeddedObject": {"objectId": s["slicerId"]}})
+                deleted += 1
 
-    requests = [
-        {"deleteEmbeddedObject": {"objectId": s["slicerId"]}}
-        for s in existing_slicers
-    ]
-
-    # Unhide _ChartData in the SAME batch as slicer creation — the slicer snapshots
-    # distinct filter values at creation time, so the source sheet must be visible now,
-    # not just later when polish_sheet runs.
+    # Unhide _ChartData so it's visible and usable for filtering
     requests.append({"updateSheetProperties": {
         "properties": {"sheetId": ws_cd_id, "hidden": False},
         "fields": "hidden",
     }})
 
-    # Slicer covers data rows only (skip row 0 header) — startRowIndex:1.
-    # Including the header (row 0) conflicts with Sheets' own column-label detection
-    # and causes the dropdown to show no values. startRowIndex:1 works correctly.
-    # SKU pivot is in the SAME rows (cols M+) so it filters automatically.
+    # Slicer placed ON _ChartData — same sheet as dataRange — so dropdown shows months.
+    # Cross-sheet slicers (slicer on Dashboard, data on _ChartData) don't populate values.
     requests.append({"addSlicer": {
         "slicer": {
             "spec": {
                 "dataRange": {
                     "sheetId":          ws_cd_id,
-                    "startRowIndex":    1,           # skip header row — avoids empty-dropdown bug
+                    "startRowIndex":    1,           # skip header row
                     "endRowIndex":      n_months + 1,
                     "startColumnIndex": 0,
-                    "endColumnIndex":   7,           # include all MoM cols so Sheets sees context
+                    "endColumnIndex":   7,
                 },
-                "columnIndex": 0,           # Month column
+                "columnIndex": 0,
                 "title": "Filter by Month",
                 "backgroundColor": {"red": 0.13, "green": 0.13, "blue": 0.13},
                 "textFormat": {
@@ -566,9 +562,9 @@ def create_month_slicer(service, sh, ws_cd_id, n_months):
             "position": {
                 "overlayPosition": {
                     "anchorCell": {
-                        "sheetId": dash_id,
-                        "rowIndex":    1,   # row 2 — same level as MoM/donut charts
-                        "columnIndex": 14,  # col O — right of the donut chart
+                        "sheetId":     ws_cd_id,
+                        "rowIndex":    0,
+                        "columnIndex": 9,   # col J — next to donut data
                     },
                     "widthPixels":  260,
                     "heightPixels": 56,
@@ -581,7 +577,7 @@ def create_month_slicer(service, sh, ws_cd_id, n_months):
         spreadsheetId=SHEET_ID,
         body={"requests": requests},
     ).execute()
-    print(f"  Month slicer {'refreshed' if existing_slicers else 'added'} on Dashboard.")
+    print(f"  Month slicer on _ChartData (deleted {deleted} old slicer(s)).")
 
 
 # ── Sheet polish ─────────────────────────────────────────────────────────────
