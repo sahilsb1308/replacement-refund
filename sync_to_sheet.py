@@ -492,6 +492,71 @@ def create_dashboard_charts(service, sh, ws_cd_id, mom_rows, sku_rows, sku_start
     print(f"  Dashboard charts created (MoM column + donut + SKU bar).")
 
 
+# ── Dashboard slicer ─────────────────────────────────────────────────────────
+
+def create_month_slicer(service, sh, ws_cd_id, n_months):
+    """Add (or refresh) a Month slicer on Dashboard connected to _ChartData."""
+    try:
+        ws_dash = sh.worksheet("Dashboard")
+    except gspread.exceptions.WorksheetNotFound:
+        return
+
+    dash_id = ws_dash.id
+
+    # Delete any existing slicers on Dashboard
+    spreadsheet = service.spreadsheets().get(spreadsheetId=SHEET_ID).execute()
+    existing_slicers = []
+    for sheet in spreadsheet.get("sheets", []):
+        if sheet["properties"]["sheetId"] == dash_id:
+            existing_slicers = sheet.get("slicers", [])
+            break
+
+    requests = [
+        {"deleteEmbeddedObject": {"objectId": s["slicerId"]}}
+        for s in existing_slicers
+    ]
+
+    # Slicer connects to the MoM block in _ChartData (col A = Month)
+    requests.append({"addSlicer": {
+        "slicer": {
+            "spec": {
+                "dataRange": {
+                    "sheetId": ws_cd_id,
+                    "startRowIndex":    0,
+                    "endRowIndex":      n_months + 1,
+                    "startColumnIndex": 0,
+                    "endColumnIndex":   7,
+                },
+                "columnIndex": 0,           # Month column
+                "title": "Filter by Month",
+                "backgroundColor": {"red": 0.13, "green": 0.13, "blue": 0.13},
+                "textFormat": {
+                    "foregroundColor": {"red": 1.0, "green": 1.0, "blue": 1.0},
+                    "bold": True,
+                    "fontSize": 10,
+                },
+            },
+            "position": {
+                "overlayPosition": {
+                    "anchorCell": {
+                        "sheetId": dash_id,
+                        "rowIndex":    0,
+                        "columnIndex": 0,
+                    },
+                    "widthPixels":  320,
+                    "heightPixels": 56,
+                }
+            }
+        }
+    }})
+
+    service.spreadsheets().batchUpdate(
+        spreadsheetId=SHEET_ID,
+        body={"requests": requests},
+    ).execute()
+    print(f"  Month slicer {'refreshed' if existing_slicers else 'added'} on Dashboard.")
+
+
 # ── Sheet polish ─────────────────────────────────────────────────────────────
 
 def polish_sheet(service, sh):
@@ -654,6 +719,7 @@ def main():
     ws_cd, mom_rows, sku_rows, sku_start = build_summary_data(sh)
     if ws_cd and mom_rows:
         create_dashboard_charts(service, sh, ws_cd.id, mom_rows, sku_rows, sku_start)
+        create_month_slicer(service, sh, ws_cd.id, len(mom_rows))
 
     # ── 6. Polish the sheet ───────────────────────────────────────────────────
     print("\nPolishing sheet...")
