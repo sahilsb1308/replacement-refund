@@ -187,7 +187,7 @@ def build_row(node):
         node.get("displayFinancialStatus", ""),
         node.get("displayFulfillmentStatus", ""),
         actions_taken(tags),                                 # col 6 – Actions Taken
-        node.get("note") or "Reason: \nSKU Code: \nClone Order ID: ",  # col 7 – Shopify note or template
+        node.get("note") or "",  # col 7 – Shopify note (blank if none)
         f"{customer.get('firstName') or ''} {customer.get('lastName') or ''}".strip(),
         customer.get("phone", "") or "",
         addr.get("city", "")     or "",
