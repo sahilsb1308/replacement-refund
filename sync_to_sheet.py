@@ -42,11 +42,13 @@ TARGET_TAGS = {
     "Refund_initiated", "Refund_Initiated",
     "Refund_credited",
     "Returned", "RTO", "Undelivered", "Replacement",
+    "Partial_replacement", "Full_replacement", "refund_given",
 }
 
 MONTH_HEADERS = [
     "Order Number", "Order Date (IST)", "Order Type", "Cancel Reason",
     "Financial Status", "Fulfillment Status",
+    "Actions Taken", "Notes",                               # ← new cols (index 6 & 7)
     "Customer Name", "Customer Phone", "City", "State",
     "Payment Method", "Order Value (₹)", "Refunded Amount (₹)", "Refund Status",
     "Product 1", "SKU 1", "Qty 1",
@@ -147,6 +149,14 @@ def payment_method(tags):
             return MAP[tag]
     return ""
 
+def actions_taken(tags):
+    t = set(tags)
+    actions = []
+    if "Partial_replacement" in t: actions.append("Partial Replacement")
+    if "Full_replacement"    in t: actions.append("Full Replacement")
+    if "refund_given"        in t: actions.append("Refund Given")
+    return ", ".join(actions)
+
 def refund_status(tags):
     t = set(tags)
     if "Refund_credited" in t:                     return "Credited"
@@ -176,6 +186,8 @@ def build_row(node):
         cancel_reason(tags),
         node.get("displayFinancialStatus", ""),
         node.get("displayFulfillmentStatus", ""),
+        actions_taken(tags),                                 # col 6 – Actions Taken
+        "",                                                  # col 7 – Notes (manual fill)
         f"{customer.get('firstName') or ''} {customer.get('lastName') or ''}".strip(),
         customer.get("phone", "") or "",
         addr.get("city", "")     or "",
@@ -527,7 +539,6 @@ def polish_sheet(service, sh):
         # Alternating row band (skip if one already exists)
         requests_list.append({"addBanding": {
             "bandedRange": {
-                "bandedRangeId": sid * 10 + 1,
                 "range": {
                     "sheetId": sid,
                     "startRowIndex": 1,
@@ -550,14 +561,14 @@ def polish_sheet(service, sh):
         ).execute()
         print("  Tabs reordered, headers frozen, columns resized, banding applied.")
     except Exception as e:
-        # Banding conflicts on re-runs; retry without addBanding
-        if "already exists" in str(e).lower() or "bandedRangeId" in str(e):
+        # On any banding conflict, retry without addBanding requests
+        if "banding" in str(e).lower() or "alternating" in str(e).lower():
             clean_requests = [r for r in requests_list if "addBanding" not in r]
             service.spreadsheets().batchUpdate(
                 spreadsheetId=SHEET_ID,
                 body={"requests": clean_requests},
             ).execute()
-            print("  Tabs reordered, headers frozen, columns resized (banding already set).")
+            print("  Tabs reordered, headers frozen, columns resized (banding already applied).")
         else:
             print(f"  Polish warning: {e}")
 
