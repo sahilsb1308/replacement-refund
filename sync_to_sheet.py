@@ -540,10 +540,10 @@ def create_month_slicer(service, sh, ws_cd_id, n_months):
                 "overlayPosition": {
                     "anchorCell": {
                         "sheetId": dash_id,
-                        "rowIndex":    0,
-                        "columnIndex": 0,
+                        "rowIndex":    1,   # row 2 — same level as MoM/donut charts
+                        "columnIndex": 14,  # col O — right of the donut chart
                     },
-                    "widthPixels":  320,
+                    "widthPixels":  260,
                     "heightPixels": 56,
                 }
             }
@@ -581,11 +581,11 @@ def polish_sheet(service, sh):
             "fields": "index",
         }})
 
-    # Hide _ChartData
+    # Keep _ChartData visible so the Dashboard slicer can read month values
     cd_ws = next((w for w in worksheets if w.title == "_ChartData"), None)
     if cd_ws:
         requests_list.append({"updateSheetProperties": {
-            "properties": {"sheetId": cd_ws.id, "hidden": True},
+            "properties": {"sheetId": cd_ws.id, "hidden": False},
             "fields": "hidden",
         }})
 
