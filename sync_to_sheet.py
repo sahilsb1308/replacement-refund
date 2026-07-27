@@ -265,11 +265,14 @@ def _col(name):
 
 def build_summary_data(sh):
     """
-    Write _ChartData with three sections:
-      A) MoM table    (A1:G{n+1})      — Month | types | Total  (slicer controls this)
-      B) Donut data   (J1:K6)           — Order Type | =SUBTOTAL()  (recalcs on slicer filter)
-      C) SKU % table  (A{n+4}:H{end})  — SKU | Refund | Returned | RTO | Undelivered | Replacement | Total
-                                          (sorted by Total desc, top 25; bar chart normalises each SKU to 100%)
+    Write _ChartData with three sections, all sharing Month in col A so one slicer
+    controls all three Dashboard charts:
+      A) MoM table       (A1:G{n+1})       — Month | types | Total
+      B) Donut data      (J1:K6)            — Order Type | =SUBTOTAL() — recalcs on slicer filter
+      C) SKU wide pivot  (A{n+4}:P{n+3+n}) — Month | top-15 SKU codes
+         Rows = months; columns = SKU issue counts.  PERCENT_STACKED bar chart
+         shows each month as one bar, colour-split by which SKU caused what % of
+         that month's issues.  Slicer hides non-matching month rows → all 3 charts update.
     """
     ws_all   = sh.worksheet("All Data")
     records  = ws_all.get_all_values()
@@ -306,11 +309,9 @@ def build_summary_data(sh):
 
     n = len(mom_rows)
 
-    # ── SKU aggregate pivot — top-25 SKUs, issue-type counts as columns ──────
-    # Each row = one SKU; each column = one issue type count + total.
-    # PERCENT_STACKED bar chart normalises each SKU bar to 100%, so a bestseller
-    # like MF10 with high absolute counts is compared fairly against niche SKUs.
-    sku_data = defaultdict(lambda: {t: 0 for t in ORDER_TYPES})
+    # ── SKU wide pivot — months as rows, top-15 SKUs as columns ─────────────
+    # Find top-15 SKUs by total issue count across all months
+    all_sku_counts = defaultdict(int)
     for row in records[1:]:
         t = row[col_type] if len(row) > col_type else ""
         if t not in ORDER_TYPES:
@@ -318,17 +319,30 @@ def build_summary_data(sh):
         for sku_col in [col_sku1, col_sku2, col_sku3]:
             sku = row[sku_col] if len(row) > sku_col else ""
             if sku:
-                sku_data[sku][t] += 1
+                all_sku_counts[sku] += 1
 
-    sku_rows = []
-    for sku, d in sku_data.items():
-        counts = [d.get(t, 0) for t in ORDER_TYPES]
-        sku_rows.append([sku] + counts + [sum(counts)])
-    sku_rows.sort(key=lambda r: r[-1], reverse=True)
-    sku_rows = sku_rows[:25]
+    top_skus = [s for s, _ in sorted(all_sku_counts.items(), key=lambda x: -x[1])[:15]]
+
+    # Count (month, SKU) issue occurrences
+    sku_month_map = defaultdict(lambda: defaultdict(int))
+    for row in records[1:]:
+        m = row[col_mon]  if len(row) > col_mon  else ""
+        t = row[col_type] if len(row) > col_type else ""
+        if not m or t not in ORDER_TYPES:
+            continue
+        for sku_col in [col_sku1, col_sku2, col_sku3]:
+            sku = row[sku_col] if len(row) > sku_col else ""
+            if sku:
+                sku_month_map[m][sku] += 1
+
+    sku_pivot_header = ["Month"] + top_skus
+    sku_pivot_rows   = [
+        [m] + [sku_month_map[m].get(sku, 0) for sku in top_skus]
+        for m in sorted_months
+    ]
 
     # ── Write _ChartData ──────────────────────────────────────────────────────
-    total_rows = n + 1 + len(sku_rows) + 10
+    total_rows = n + 1 + len(sku_pivot_rows) + 10
     ws_cd = get_or_create_tab(sh, "_ChartData", rows=max(total_rows, 100), cols=20)
     ws_cd.clear()
 
@@ -342,13 +356,12 @@ def build_summary_data(sh):
     ]
     ws_cd.update(values=donut_data, range_name="J1", value_input_option="USER_ENTERED")
 
-    # C) SKU block — SKU | Refund | Returned | RTO | Undelivered | Replacement | Total
+    # C) SKU wide pivot — Month | SKU1 | SKU2 | …  (slicer hides month rows → SKU chart updates)
     sku_start = n + 4   # 1-indexed sheet row for this section's header
-    sku_header = ["SKU"] + ORDER_TYPES + ["Total"]
-    ws_cd.update(values=[sku_header] + sku_rows, range_name=f"A{sku_start}", value_input_option="USER_ENTERED")
+    ws_cd.update(values=[sku_pivot_header] + sku_pivot_rows, range_name=f"A{sku_start}", value_input_option="USER_ENTERED")
 
-    print(f"  _ChartData: {n} months, {len(sku_rows)} SKUs (% breakdown per SKU), donut via SUBTOTAL.")
-    return ws_cd, mom_rows, sku_rows, sku_start, len(ORDER_TYPES)
+    print(f"  _ChartData: {n} months, top {len(top_skus)} SKUs (wide pivot, slicer-responsive), donut via SUBTOTAL.")
+    return ws_cd, mom_rows, sku_pivot_rows, sku_start, len(top_skus)
 
 
 def create_dashboard_charts(service, sh, ws_cd_id, mom_rows, sku_pivot_rows, sku_start, n_sku_series):
@@ -456,25 +469,24 @@ def create_dashboard_charts(service, sh, ws_cd_id, mom_rows, sku_pivot_rows, sku
         }},
     }}})
 
-    # ── Chart 3: Top-25 SKUs — issue-type % breakdown per SKU ────────────────
-    # Aggregate pivot: SKU in col 0, order types in cols 1-5, total in col 6
-    # Domain = SKU col so each bar = one SKU; PERCENT_STACKED normalises to 100%
-    # so MF10's high absolute count doesn't dominate — you see the type mix instead
-    sku_hdr_idx  = sku_start - 1              # 0-based row of SKU section header
-    sku_data_end = sku_hdr_idx + 1 + n_skus  # 0-based exclusive end of data rows
+    # ── Chart 3: Top-15 SKUs wide pivot — % of month's issues per SKU ────────
+    # Rows = months, cols = top-15 SKUs; PERCENT_STACKED shows each month as one
+    # 100% bar split by SKU share.  Slicer hides non-matching month rows so
+    # selecting May shows one bar = May's SKU breakdown, All = 3 bars.
+    sku_hdr_idx  = sku_start - 1              # 0-based row of SKU pivot header
+    sku_data_end = sku_hdr_idx + 1 + n_skus  # 0-based exclusive end (n_skus = n_months here)
     requests_list.append({"addChart": {"chart": {
         "spec": {
-            "title": "Top 25 SKUs — Issue Type Breakdown (%)",
+            "title": "Top 15 SKUs — Share of Issue Orders by Month (%)",
             "basicChart": {
                 "chartType": "BAR",
                 "stackedType": "PERCENT_STACKED",
-                "legendPosition": "BOTTOM_LEGEND",
+                "legendPosition": "RIGHT_LEGEND",
                 "domains": [{"domain": {"sourceRange": {"sources": [col_range(cd_id, sku_hdr_idx + 1, sku_data_end, 0)]}}}],
                 "series": [
                     {
                         "series": {"sourceRange": {"sources": [col_range(cd_id, sku_hdr_idx, sku_data_end, i + 1)]}},
                         "targetAxis": "BOTTOM_AXIS",
-                        "color": COLORS[i],
                     }
                     for i in range(n_sku_series)
                 ],
@@ -526,16 +538,17 @@ def create_month_slicer(service, sh, ws_cd_id, n_months, sku_start, n_sku_pivot_
         "fields": "hidden",
     }})
 
-    # Slicer covers header + MoM data rows (rows 0..n_months, 0-indexed).
-    # Must include row 0 (header) so Sheets can label the column correctly;
-    # columnIndex:0 then tells it to filter by the Month column.
+    # Slicer covers header + MoM rows + SKU pivot rows — all have Month in col A.
+    # Must include row 0 (MoM header) so Sheets labels the column correctly.
+    # sku_start (1-indexed): SKU header row; sku_start+n_sku_pivot_rows = end of SKU data.
+    sku_pivot_end = sku_start + n_sku_pivot_rows   # 0-indexed exclusive end of SKU pivot data
     requests.append({"addSlicer": {
         "slicer": {
             "spec": {
                 "dataRange": {
                     "sheetId":          ws_cd_id,
-                    "startRowIndex":    0,           # include header row
-                    "endRowIndex":      n_months + 1,
+                    "startRowIndex":    0,           # include MoM header row so column is labelled
+                    "endRowIndex":      sku_pivot_end,
                     "startColumnIndex": 0,
                     "endColumnIndex":   7,
                 },
