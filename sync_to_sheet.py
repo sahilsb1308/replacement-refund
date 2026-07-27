@@ -358,7 +358,7 @@ def create_dashboard_charts(service, sh, ws_cd_id, mom_rows, sku_rows, sku_start
 
     dash_id = ws_dash.id
 
-    # Check if charts already exist on Dashboard — skip if so
+    # Delete existing charts on Dashboard so we always recreate with fresh ranges
     spreadsheet = service.spreadsheets().get(spreadsheetId=SHEET_ID).execute()
     existing_charts = [
         c for sheet in spreadsheet.get("sheets", [])
@@ -366,8 +366,14 @@ def create_dashboard_charts(service, sh, ws_cd_id, mom_rows, sku_rows, sku_start
         if sheet["properties"]["sheetId"] == dash_id
     ]
     if existing_charts:
-        print(f"  Dashboard already has {len(existing_charts)} chart(s) — skipping creation.")
-        return
+        service.spreadsheets().batchUpdate(
+            spreadsheetId=SHEET_ID,
+            body={"requests": [
+                {"deleteEmbeddedObject": {"objectId": c["chartId"]}}
+                for c in existing_charts
+            ]},
+        ).execute()
+        print(f"  Deleted {len(existing_charts)} existing chart(s) — rebuilding.")
 
     n_months = len(mom_rows)
     n_skus   = len(sku_rows)
@@ -434,14 +440,16 @@ def create_dashboard_charts(service, sh, ws_cd_id, mom_rows, sku_rows, sku_start
         value_input_option="USER_ENTERED"
     )
 
+    n_types = len(ORDER_TYPES)
     requests_list.append({"addChart": {"chart": {
         "spec": {
             "title": "Overall Order Type Breakdown",
             "pieChart": {
                 "legendPosition": "RIGHT_LEGEND",
                 "pieHole": 0.4,
-                "domain": {"sourceRange": {"sources": [col_range(cd_id, 0, len(donut_data), donut_start_col)]}},
-                "series": {"sourceRange": {"sources": [col_range(cd_id, 0, len(donut_data), donut_start_col + 1)]}},
+                # rows 1..n_types — skip the header row so values are numeric
+                "domain": {"sourceRange": {"sources": [col_range(cd_id, 1, 1 + n_types, donut_start_col)]}},
+                "series": {"sourceRange": {"sources": [col_range(cd_id, 1, 1 + n_types, donut_start_col + 1)]}},
             },
         },
         "position": {"overlayPosition": {
@@ -524,6 +532,23 @@ def polish_sheet(service, sh):
     for ws in data_tabs:
         sid = ws.id
         col_count = len(MONTH_HEADERS) if month_pattern.match(ws.title) else len(ALL_DATA_HEADERS)
+
+        # Clear all existing cell borders
+        requests_list.append({"updateBorders": {
+            "range": {
+                "sheetId": sid,
+                "startRowIndex": 0,
+                "endRowIndex": 10000,
+                "startColumnIndex": 0,
+                "endColumnIndex": col_count,
+            },
+            "top":             {"style": "NONE"},
+            "bottom":          {"style": "NONE"},
+            "left":            {"style": "NONE"},
+            "right":           {"style": "NONE"},
+            "innerHorizontal": {"style": "NONE"},
+            "innerVertical":   {"style": "NONE"},
+        }})
 
         # Freeze row 1
         requests_list.append({"updateSheetProperties": {
