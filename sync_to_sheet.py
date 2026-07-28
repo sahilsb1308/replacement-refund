@@ -292,14 +292,15 @@ def _parse_reason(note):
 
 
 def _parse_damage_sku(note):
-    """Return the affected SKU from a note (first SKU on the sku- / ReplacementSKU: line)."""
+    """Return the affected SKU from a note (first SKU on the sku- / ReplacementSKU: line).
+    Requires a hyphen so free-text values like 'ALL' or 'missing' are ignored."""
     for line in note.split('\n'):
         line = line.strip()
         m = re.match(r'(?:replacement\s*)?sku[-:\s=]+(.+)', line, re.IGNORECASE)
         if m:
             raw = m.group(1).strip()
             sku = re.split(r'[\s,;\n]+', raw)[0].strip()
-            if sku and len(sku) > 1:
+            if sku and '-' in sku:   # all real SB SKUs have at least one hyphen
                 return sku.upper()
     return None
 
@@ -381,8 +382,9 @@ def build_summary_data(sh):
 
     # ── Damage / Missing pivot from order notes ───────────────────────────────
     col_notes = header.index("Notes") if "Notes" in header else None
-    damage_reason_by_month: dict = defaultdict(lambda: defaultdict(int))
-    damage_sku_by_month:    dict = defaultdict(lambda: defaultdict(int))
+    damage_reason_by_month:  dict = defaultdict(lambda: defaultdict(int))
+    damaged_sku_by_month:    dict = defaultdict(lambda: defaultdict(int))
+    missing_sku_by_month:    dict = defaultdict(lambda: defaultdict(int))
 
     if col_notes is not None:
         for row in records[1:]:
@@ -395,29 +397,43 @@ def build_summary_data(sh):
                 damage_reason_by_month[m][reason] += 1
                 sku = _parse_damage_sku(note)
                 if sku:
-                    damage_sku_by_month[m][sku] += 1
+                    if reason == 'Damaged':
+                        damaged_sku_by_month[m][sku] += 1
+                    elif reason == 'Missing':
+                        missing_sku_by_month[m][sku] += 1
 
     reason_pivot_data = [
         [damage_reason_by_month[m].get(r, 0) for r in REASON_LABELS]
         for m in sorted_months
     ]
 
-    all_damage_sku_counts: dict = defaultdict(int)
-    for m_data in damage_sku_by_month.values():
-        for sku, cnt in m_data.items():
-            all_damage_sku_counts[sku] += cnt
-    top_damage_skus = [s for s, _ in sorted(all_damage_sku_counts.items(), key=lambda x: -x[1])[:TOP_DAMAGE_SKUS]]
-    damage_sku_pivot_data = [
-        [damage_sku_by_month[m].get(sku, 0) for sku in top_damage_skus]
+    def _top_skus_for(by_month, n=TOP_DAMAGE_SKUS):
+        totals: dict = defaultdict(int)
+        for m_data in by_month.values():
+            for sku, cnt in m_data.items():
+                totals[sku] += cnt
+        return [s for s, _ in sorted(totals.items(), key=lambda x: -x[1])[:n]]
+
+    top_damaged_skus = _top_skus_for(damaged_sku_by_month)
+    top_missing_skus = _top_skus_for(missing_sku_by_month)
+
+    damaged_sku_pivot_data = [
+        [damaged_sku_by_month[m].get(sku, 0) for sku in top_damaged_skus]
+        for m in sorted_months
+    ]
+    missing_sku_pivot_data = [
+        [missing_sku_by_month[m].get(sku, 0) for sku in top_missing_skus]
         for m in sorted_months
     ]
 
     # Column layout (0-indexed):
-    #   M(12)..AB(27) = top-15 SKU pivot
-    #   AD(29)..AH(33) = damage reason pivot  (gap of 1 col)
-    #   AJ(35)..AS(44) = damage SKU pivot     (gap of 1 col)
+    #   M(12)..AB(27)  = top-15 SKU pivot
+    #   AD(29)..AH(33) = damage reason pivot   (gap of 1 col)
+    #   AJ(35)..AS(44) = damaged SKU pivot     (gap of 1 col)
+    #   AU(46)..BD(55) = missing SKU pivot     (gap of 1 col)
     damage_reason_col = SKU_COL_START + len(top_skus) + 2
-    damage_sku_col    = damage_reason_col + len(REASON_LABELS) + 2
+    damaged_sku_col   = damage_reason_col + len(REASON_LABELS) + 2
+    missing_sku_col   = damaged_sku_col   + TOP_DAMAGE_SKUS    + 2
 
     # ── Write _ChartData ──────────────────────────────────────────────────────
     ws_cd = get_or_create_tab(sh, "_ChartData", rows=max(n + 10, 20), cols=60)
@@ -446,19 +462,27 @@ def build_summary_data(sh):
     if reason_pivot_data:
         ws_cd.update(values=reason_pivot_data, range_name=f"{dr_letter}2", value_input_option="USER_ENTERED")
 
-    # E) Damage SKU pivot — same row structure as MoM
-    if top_damage_skus:
-        ds_letter = _col_letter(damage_sku_col)
-        ws_cd.update(values=[top_damage_skus],      range_name=f"{ds_letter}1", value_input_option="USER_ENTERED")
-        ws_cd.update(values=damage_sku_pivot_data,  range_name=f"{ds_letter}2", value_input_option="USER_ENTERED")
+    # E) Damaged SKU pivot (reason == 'Damaged' only)
+    if top_damaged_skus:
+        de_letter = _col_letter(damaged_sku_col)
+        ws_cd.update(values=[top_damaged_skus],     range_name=f"{de_letter}1", value_input_option="USER_ENTERED")
+        ws_cd.update(values=damaged_sku_pivot_data, range_name=f"{de_letter}2", value_input_option="USER_ENTERED")
+
+    # F) Missing SKU pivot (reason == 'Missing' only)
+    if top_missing_skus:
+        mf_letter = _col_letter(missing_sku_col)
+        ws_cd.update(values=[top_missing_skus],     range_name=f"{mf_letter}1", value_input_option="USER_ENTERED")
+        ws_cd.update(values=missing_sku_pivot_data, range_name=f"{mf_letter}2", value_input_option="USER_ENTERED")
 
     total_notes = sum(sum(d.values()) for d in damage_reason_by_month.values())
     print(f"  _ChartData: {n} months, top {len(top_skus)} SKUs, {total_notes} damage/missing notes parsed.")
-    return ws_cd, mom_rows, len(top_skus), damage_reason_col, damage_sku_col, len(top_damage_skus)
+    return ws_cd, mom_rows, len(top_skus), damage_reason_col, damaged_sku_col, len(top_damaged_skus), missing_sku_col, len(top_missing_skus)
 
 
 def create_dashboard_charts(service, sh, ws_cd_id, mom_rows, n_sku_series,
-                             damage_reason_col, damage_sku_col, n_damage_skus):
+                             damage_reason_col,
+                             damaged_sku_col, n_damaged_skus,
+                             missing_sku_col,  n_missing_skus):
     """
     Create charts on the Dashboard tab using the Sheets API.
     Skips creation if charts already exist on that sheet.
@@ -638,34 +662,66 @@ def create_dashboard_charts(service, sh, ws_cd_id, mom_rows, n_sku_series,
         }},
     }}})
 
-    # ── Chart 5: Top Damaged SKUs — % share per month (percent-stacked bar) ────
-    if n_damage_skus > 0:
-        damage_sku_end = n_months + 1
+    # ── Chart 5: Top Damaged SKUs — stacked bar (absolute counts, not %) ────────
+    # STACKED (not PERCENT_STACKED) so months with 0 damage still show an empty bar
+    if n_damaged_skus > 0:
+        damaged_end = n_months + 1
         requests_list.append({"addChart": {"chart": {
             "spec": {
-                "title": f"Top {n_damage_skus} SKUs — Share of Damage/Missing Issues (%)",
+                "title": f"Top {n_damaged_skus} SKUs — Damaged Issues by Month",
                 "basicChart": {
                     "chartType": "BAR",
-                    "stackedType": "PERCENT_STACKED",
+                    "stackedType": "STACKED",
                     "legendPosition": "RIGHT_LEGEND",
                     "domains": [{"domain": {"sourceRange": {"sources": [
-                        col_range(cd_id, 0, damage_sku_end, 0)
+                        col_range(cd_id, 0, damaged_end, 0)
                     ]}}}],
                     "series": [
                         {
                             "series": {"sourceRange": {"sources": [
-                                col_range(cd_id, 0, damage_sku_end, damage_sku_col + i)
+                                col_range(cd_id, 0, damaged_end, damaged_sku_col + i)
                             ]}},
                             "targetAxis": "BOTTOM_AXIS",
                         }
-                        for i in range(n_damage_skus)
+                        for i in range(n_damaged_skus)
                     ],
                     "headerCount": 1,
                 },
             },
             "position": {"overlayPosition": {
-                "anchorCell": {"sheetId": dash_id, "rowIndex": 50, "columnIndex": 9},
-                "widthPixels": 540, "heightPixels": 380,
+                "anchorCell": {"sheetId": dash_id, "rowIndex": 70, "columnIndex": 0},
+                "widthPixels": 560, "heightPixels": 380,
+            }},
+        }}})
+
+    # ── Chart 6: Top Missing SKUs — stacked bar ───────────────────────────────
+    if n_missing_skus > 0:
+        missing_end = n_months + 1
+        requests_list.append({"addChart": {"chart": {
+            "spec": {
+                "title": f"Top {n_missing_skus} SKUs — Missing Issues by Month",
+                "basicChart": {
+                    "chartType": "BAR",
+                    "stackedType": "STACKED",
+                    "legendPosition": "RIGHT_LEGEND",
+                    "domains": [{"domain": {"sourceRange": {"sources": [
+                        col_range(cd_id, 0, missing_end, 0)
+                    ]}}}],
+                    "series": [
+                        {
+                            "series": {"sourceRange": {"sources": [
+                                col_range(cd_id, 0, missing_end, missing_sku_col + i)
+                            ]}},
+                            "targetAxis": "BOTTOM_AXIS",
+                        }
+                        for i in range(n_missing_skus)
+                    ],
+                    "headerCount": 1,
+                },
+            },
+            "position": {"overlayPosition": {
+                "anchorCell": {"sheetId": dash_id, "rowIndex": 70, "columnIndex": 9},
+                "widthPixels": 560, "heightPixels": 380,
             }},
         }}})
 
@@ -673,8 +729,8 @@ def create_dashboard_charts(service, sh, ws_cd_id, mom_rows, n_sku_series,
         spreadsheetId=SHEET_ID,
         body={"requests": requests_list},
     ).execute()
-    n_charts = 3 + 1 + (1 if n_damage_skus > 0 else 0)
-    print(f"  Dashboard charts created ({n_charts} total: MoM + donut + SKU bar + damage reason + damage SKU).")
+    n_charts = 4 + (1 if n_damaged_skus > 0 else 0) + (1 if n_missing_skus > 0 else 0)
+    print(f"  Dashboard charts created ({n_charts} total: MoM + donut + SKU + reason + damaged SKU + missing SKU).")
 
 
 # ── Dashboard slicer ─────────────────────────────────────────────────────────
@@ -908,10 +964,13 @@ def main():
 
     # ── 5. Rebuild _ChartData + create Dashboard charts ───────────────────────
     print("\nUpdating chart data...")
-    ws_cd, mom_rows, n_sku_series, damage_reason_col, damage_sku_col, n_damage_skus = build_summary_data(sh)
+    ws_cd, mom_rows, n_sku_series, damage_reason_col, \
+        damaged_sku_col, n_damaged_skus, missing_sku_col, n_missing_skus = build_summary_data(sh)
     if ws_cd and mom_rows:
         create_dashboard_charts(service, sh, ws_cd.id, mom_rows, n_sku_series,
-                                 damage_reason_col, damage_sku_col, n_damage_skus)
+                                 damage_reason_col,
+                                 damaged_sku_col, n_damaged_skus,
+                                 missing_sku_col,  n_missing_skus)
         create_month_slicer(service, sh, ws_cd.id, len(mom_rows))
 
     # ── 6. Polish the sheet ───────────────────────────────────────────────────
