@@ -263,19 +263,57 @@ def _col(name):
     return ALL_DATA_HEADERS.index(name)
 
 
-SKU_COL_START = 12   # col M (0-indexed) — SKU pivot lives in same rows as MoM, cols M onward
+SKU_COL_START    = 12   # col M (0-indexed) — SKU pivot lives in same rows as MoM, cols M onward
+REASON_LABELS    = ["Damaged", "Missing", "Wrong Item", "Used", "Other"]
+TOP_DAMAGE_SKUS  = 10
+
+
+def _col_letter(n):
+    """0-indexed column number → A1-notation letter (A=0, Z=25, AA=26 …)."""
+    result, n = '', n + 1
+    while n:
+        n, r = divmod(n - 1, 26)
+        result = chr(65 + r) + result
+    return result
+
+
+def _parse_reason(note):
+    """Return normalised reason string from a Shopify order note, or None."""
+    for line in note.split('\n'):
+        m = re.match(r'reason[-:\s]+(.+)', line.strip(), re.IGNORECASE)
+        if m:
+            r = m.group(1).strip().lower()
+            if 'damage'              in r: return 'Damaged'
+            if 'missing'             in r: return 'Missing'
+            if 'wrong' in r or 'incorrect' in r: return 'Wrong Item'
+            if 'used'                in r: return 'Used'
+            return 'Other'
+    return None
+
+
+def _parse_damage_sku(note):
+    """Return the affected SKU from a note (first SKU on the sku- / ReplacementSKU: line)."""
+    for line in note.split('\n'):
+        line = line.strip()
+        m = re.match(r'(?:replacement\s*)?sku[-:\s=]+(.+)', line, re.IGNORECASE)
+        if m:
+            raw = m.group(1).strip()
+            sku = re.split(r'[\s,;\n]+', raw)[0].strip()
+            if sku and len(sku) > 1:
+                return sku.upper()
+    return None
 
 
 def build_summary_data(sh):
     """
-    Write _ChartData so a single slicer on col A controls all three Dashboard charts.
-    All data fits in rows 1..n (one row per month) — no separate SKU row-block needed:
+    Write _ChartData so a single slicer on col A controls all five Dashboard charts.
+    All data fits in rows 1..n (one row per month):
 
       Cols A–G  (rows 0..n): MoM table — Month | Refund | Returned | RTO | Undelivered | Replacement | Total
       Cols J–K  (rows 0..5): Donut     — Order Type | =SUBTOTAL() recalcs on slicer filter
       Cols M+   (rows 0..n): SKU pivot — top-15 SKU codes as column headers, counts as data
-
-    The slicer covers rows 0..n of col A with no gaps, so May/June/July always appear.
+      Cols AD+  (rows 0..n): Damage reason pivot — Damaged | Missing | Wrong Item | Used | Other
+      Cols AK+  (rows 0..n): Damage SKU pivot — top-10 SKUs from damage/missing notes
     """
     ws_all   = sh.worksheet("All Data")
     records  = ws_all.get_all_values()
@@ -341,9 +379,52 @@ def build_summary_data(sh):
         for m in sorted_months
     ]
 
+    # ── Damage / Missing pivot from order notes ───────────────────────────────
+    col_notes = header.index("Notes") if "Notes" in header else None
+    damage_reason_by_month: dict = defaultdict(lambda: defaultdict(int))
+    damage_sku_by_month:    dict = defaultdict(lambda: defaultdict(int))
+
+    if col_notes is not None:
+        for row in records[1:]:
+            m    = row[col_mon]   if len(row) > col_mon   else ""
+            note = row[col_notes] if len(row) > col_notes else ""
+            if not m or not note.strip():
+                continue
+            reason = _parse_reason(note)
+            if reason:
+                damage_reason_by_month[m][reason] += 1
+                sku = _parse_damage_sku(note)
+                if sku:
+                    damage_sku_by_month[m][sku] += 1
+
+    reason_pivot_data = [
+        [damage_reason_by_month[m].get(r, 0) for r in REASON_LABELS]
+        for m in sorted_months
+    ]
+
+    all_damage_sku_counts: dict = defaultdict(int)
+    for m_data in damage_sku_by_month.values():
+        for sku, cnt in m_data.items():
+            all_damage_sku_counts[sku] += cnt
+    top_damage_skus = [s for s, _ in sorted(all_damage_sku_counts.items(), key=lambda x: -x[1])[:TOP_DAMAGE_SKUS]]
+    damage_sku_pivot_data = [
+        [damage_sku_by_month[m].get(sku, 0) for sku in top_damage_skus]
+        for m in sorted_months
+    ]
+
+    # Column layout (0-indexed):
+    #   M(12)..AB(27) = top-15 SKU pivot
+    #   AD(29)..AH(33) = damage reason pivot  (gap of 1 col)
+    #   AJ(35)..AS(44) = damage SKU pivot     (gap of 1 col)
+    damage_reason_col = SKU_COL_START + len(top_skus) + 2
+    damage_sku_col    = damage_reason_col + len(REASON_LABELS) + 2
+
     # ── Write _ChartData ──────────────────────────────────────────────────────
-    ws_cd = get_or_create_tab(sh, "_ChartData", rows=max(n + 10, 20), cols=30)
+    ws_cd = get_or_create_tab(sh, "_ChartData", rows=max(n + 10, 20), cols=60)
     ws_cd.clear()
+    # Resize to 60 cols if the existing tab is too narrow for the damage pivot columns
+    if ws_cd.col_count < 60:
+        ws_cd.resize(rows=max(n + 10, 20), cols=60)
 
     # A) MoM cols A–G, rows 1..n+1
     ws_cd.update(values=[mom_header] + mom_rows, range_name="A1", value_input_option="USER_ENTERED")
@@ -356,15 +437,28 @@ def build_summary_data(sh):
     ws_cd.update(values=donut_data, range_name="J1", value_input_option="USER_ENTERED")
 
     # C) SKU pivot cols M+, SAME rows as MoM — header in row 1, data in rows 2..n+1
-    # No separate row block → no gaps → slicer sees clean Month values with no blanks
     ws_cd.update(values=[top_skus],      range_name="M1", value_input_option="USER_ENTERED")
     ws_cd.update(values=sku_pivot_data,  range_name="M2", value_input_option="USER_ENTERED")
 
-    print(f"  _ChartData: {n} months, top {len(top_skus)} SKUs in cols M+ (same rows, no gaps).")
-    return ws_cd, mom_rows, len(top_skus)
+    # D) Damage reason pivot — same row structure as MoM
+    dr_letter = _col_letter(damage_reason_col)
+    ws_cd.update(values=[REASON_LABELS],    range_name=f"{dr_letter}1", value_input_option="USER_ENTERED")
+    if reason_pivot_data:
+        ws_cd.update(values=reason_pivot_data, range_name=f"{dr_letter}2", value_input_option="USER_ENTERED")
+
+    # E) Damage SKU pivot — same row structure as MoM
+    if top_damage_skus:
+        ds_letter = _col_letter(damage_sku_col)
+        ws_cd.update(values=[top_damage_skus],      range_name=f"{ds_letter}1", value_input_option="USER_ENTERED")
+        ws_cd.update(values=damage_sku_pivot_data,  range_name=f"{ds_letter}2", value_input_option="USER_ENTERED")
+
+    total_notes = sum(sum(d.values()) for d in damage_reason_by_month.values())
+    print(f"  _ChartData: {n} months, top {len(top_skus)} SKUs, {total_notes} damage/missing notes parsed.")
+    return ws_cd, mom_rows, len(top_skus), damage_reason_col, damage_sku_col, len(top_damage_skus)
 
 
-def create_dashboard_charts(service, sh, ws_cd_id, mom_rows, n_sku_series):
+def create_dashboard_charts(service, sh, ws_cd_id, mom_rows, n_sku_series,
+                             damage_reason_col, damage_sku_col, n_damage_skus):
     """
     Create charts on the Dashboard tab using the Sheets API.
     Skips creation if charts already exist on that sheet.
@@ -376,6 +470,10 @@ def create_dashboard_charts(service, sh, ws_cd_id, mom_rows, n_sku_series):
         ws_dash = sh.add_worksheet(title="Dashboard", rows=50, cols=20)
 
     dash_id = ws_dash.id
+
+    # Ensure Dashboard has enough rows for all charts (new damage charts anchor at row 50+)
+    if ws_dash.row_count < 120:
+        ws_dash.resize(rows=120)
 
     # Delete existing charts on Dashboard so we always recreate with fresh ranges
     spreadsheet = service.spreadsheets().get(spreadsheetId=SHEET_ID).execute()
@@ -501,11 +599,82 @@ def create_dashboard_charts(service, sh, ws_cd_id, mom_rows, n_sku_series):
         }},
     }}})
 
+    # ── Chart 4: Damage / Missing — Reason Breakdown (stacked column, absolute counts) ──
+    n_reasons    = len(REASON_LABELS)
+    reason_end   = n_months + 1
+    REASON_COLORS = [
+        {"red": 0.83, "green": 0.18, "blue": 0.18},  # red    – Damaged
+        {"red": 0.23, "green": 0.47, "blue": 0.85},  # blue   – Missing
+        {"red": 0.96, "green": 0.60, "blue": 0.07},  # amber  – Wrong Item
+        {"red": 0.42, "green": 0.65, "blue": 0.31},  # green  – Used
+        {"red": 0.60, "green": 0.30, "blue": 0.70},  # purple – Other
+    ]
+    requests_list.append({"addChart": {"chart": {
+        "spec": {
+            "title": "Damage & Missing — Reason Breakdown",
+            "basicChart": {
+                "chartType": "COLUMN",
+                "stackedType": "STACKED",
+                "legendPosition": "BOTTOM_LEGEND",
+                "domains": [{"domain": {"sourceRange": {"sources": [
+                    col_range(cd_id, 0, reason_end, 0)
+                ]}}}],
+                "series": [
+                    {
+                        "series": {"sourceRange": {"sources": [
+                            col_range(cd_id, 0, reason_end, damage_reason_col + i)
+                        ]}},
+                        "targetAxis": "LEFT_AXIS",
+                        "color": REASON_COLORS[i],
+                    }
+                    for i in range(n_reasons)
+                ],
+                "headerCount": 1,
+            },
+        },
+        "position": {"overlayPosition": {
+            "anchorCell": {"sheetId": dash_id, "rowIndex": 50, "columnIndex": 0},
+            "widthPixels": 560, "heightPixels": 380,
+        }},
+    }}})
+
+    # ── Chart 5: Top Damaged SKUs — % share per month (percent-stacked bar) ────
+    if n_damage_skus > 0:
+        damage_sku_end = n_months + 1
+        requests_list.append({"addChart": {"chart": {
+            "spec": {
+                "title": f"Top {n_damage_skus} SKUs — Share of Damage/Missing Issues (%)",
+                "basicChart": {
+                    "chartType": "BAR",
+                    "stackedType": "PERCENT_STACKED",
+                    "legendPosition": "RIGHT_LEGEND",
+                    "domains": [{"domain": {"sourceRange": {"sources": [
+                        col_range(cd_id, 0, damage_sku_end, 0)
+                    ]}}}],
+                    "series": [
+                        {
+                            "series": {"sourceRange": {"sources": [
+                                col_range(cd_id, 0, damage_sku_end, damage_sku_col + i)
+                            ]}},
+                            "targetAxis": "BOTTOM_AXIS",
+                        }
+                        for i in range(n_damage_skus)
+                    ],
+                    "headerCount": 1,
+                },
+            },
+            "position": {"overlayPosition": {
+                "anchorCell": {"sheetId": dash_id, "rowIndex": 50, "columnIndex": 9},
+                "widthPixels": 540, "heightPixels": 380,
+            }},
+        }}})
+
     service.spreadsheets().batchUpdate(
         spreadsheetId=SHEET_ID,
         body={"requests": requests_list},
     ).execute()
-    print(f"  Dashboard charts created (MoM column + donut + SKU bar).")
+    n_charts = 3 + 1 + (1 if n_damage_skus > 0 else 0)
+    print(f"  Dashboard charts created ({n_charts} total: MoM + donut + SKU bar + damage reason + damage SKU).")
 
 
 # ── Dashboard slicer ─────────────────────────────────────────────────────────
@@ -739,9 +908,10 @@ def main():
 
     # ── 5. Rebuild _ChartData + create Dashboard charts ───────────────────────
     print("\nUpdating chart data...")
-    ws_cd, mom_rows, n_sku_series = build_summary_data(sh)
+    ws_cd, mom_rows, n_sku_series, damage_reason_col, damage_sku_col, n_damage_skus = build_summary_data(sh)
     if ws_cd and mom_rows:
-        create_dashboard_charts(service, sh, ws_cd.id, mom_rows, n_sku_series)
+        create_dashboard_charts(service, sh, ws_cd.id, mom_rows, n_sku_series,
+                                 damage_reason_col, damage_sku_col, n_damage_skus)
         create_month_slicer(service, sh, ws_cd.id, len(mom_rows))
 
     # ── 6. Polish the sheet ───────────────────────────────────────────────────
