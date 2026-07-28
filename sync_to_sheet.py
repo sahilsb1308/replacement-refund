@@ -954,7 +954,7 @@ def create_dashboard_charts(service, sh, ws_cd_id, mom_rows, n_sku_series,
                         "targetAxis": "LEFT_AXIS",
                         "color": LOSS_COLORS[i],
                     }
-                    for i in range(3)  # 3 loss types; skip col +3 (null count)
+                    for i in range(4)  # 4 loss series; skip col +4 (null count)
                 ],
                 "headerCount": 1,
             },
