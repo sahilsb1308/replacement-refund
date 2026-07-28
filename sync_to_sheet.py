@@ -197,6 +197,9 @@ def _order_loss(tags, items, refunded_str):
       Clone MRP unknown       → '' (null – tracked separately as unknown)
     """
     t = set(tags)
+    if "customer-cancel" in {tag.lower() for tag in tags}:
+        return ""   # customer cancellations are never a loss event
+
     try:    refunded = float(refunded_str or 0)
     except: refunded = 0.0
 
@@ -537,6 +540,7 @@ def build_summary_data(sh):
     col_actions   = header.index("Actions Taken")       if "Actions Taken"       in header else None
     col_refunded  = header.index("Refunded Amount (₹)") if "Refunded Amount (₹)" in header else None
     col_clone_mrp = header.index("Clone MRP (₹)")       if "Clone MRP (₹)"       in header else None
+    col_cancel    = header.index("Cancel Reason")        if "Cancel Reason"        in header else None
 
     def _sf(v):
         try:    return float(v or 0)
@@ -552,6 +556,9 @@ def build_summary_data(sh):
         otype = row[col_type] if len(row) > col_type else ""
         if not m:
             continue
+        cancel    = (row[col_cancel]    if col_cancel    and len(row) > col_cancel    else "") or ""
+        if cancel == "Customer Cancel":
+            continue   # customer cancellations excluded from loss
         actions   = (row[col_actions]   if col_actions   and len(row) > col_actions   else "") or ""
         refunded  = _sf(row[col_refunded]  if col_refunded  and len(row) > col_refunded  else 0)
         clone_mrp_val = _sf(row[col_clone_mrp] if col_clone_mrp and len(row) > col_clone_mrp else 0)
