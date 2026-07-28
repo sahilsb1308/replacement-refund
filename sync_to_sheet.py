@@ -124,11 +124,11 @@ def fetch_month_orders(year: int, month: int):
 
 def order_type(tags):
     t = set(tags)
-    if "Replacement" in t:                                              return "Replacement"
-    if t & {"Refund_initiated", "Refund_Initiated", "Refund_credited"}: return "Refund"
-    if "RTO"         in t:                                              return "RTO"
-    if "Returned"    in t:                                              return "Returned"
-    if "Undelivered" in t:                                              return "Undelivered"
+    if "Replacement" in t or t & {"Full_replacement", "Partial_replacement"}: return "Replacement"
+    if t & {"Refund_initiated", "Refund_Initiated", "Refund_credited"}:        return "Refund"
+    if "RTO"         in t:                                                     return "RTO"
+    if "Returned"    in t:                                                     return "Returned"
+    if "Undelivered" in t:                                                     return "Undelivered"
     return "Other"
 
 def cancel_reason(tags):
@@ -175,7 +175,8 @@ def to_ist(utc_str):
 def _clone_mrp_value(tags, items):
     """Sum originalUnitPrice × qty for replacement order items.
     Returns None when MRP can't be determined (price ≤ 1 = clone token price)."""
-    if "Replacement" not in set(tags):
+    t = set(tags)
+    if not ("Replacement" in t or t & {"Full_replacement", "Partial_replacement"}):
         return None
     total = sum(
         float(((item.get("originalUnitPriceSet") or {}).get("shopMoney") or {}).get("amount", 0) or 0)
@@ -202,7 +203,7 @@ def _order_loss(tags, items, refunded_str):
     is_full         = "Full_replacement"    in t
     is_partial      = "Partial_replacement" in t
     is_refund_given = "refund_given"        in t
-    is_replacement  = "Replacement"         in t
+    is_replacement  = "Replacement" in t or is_full or is_partial
     is_refund_only  = bool(t & {"Refund_initiated", "Refund_Initiated", "Refund_credited"}) and not is_replacement
     ship            = 200 if is_full else 100
 
