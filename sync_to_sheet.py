@@ -634,9 +634,69 @@ def create_dashboard_charts(service, sh, ws_cd_id, mom_rows, n_sku_series,
 
     dash_id = ws_dash.id
 
-    # Ensure Dashboard has enough rows for all charts (new damage charts anchor at row 50+)
+    # Ensure Dashboard has enough rows for all charts
     if ws_dash.row_count < 120:
         ws_dash.resize(rows=120)
+
+    # ── Dashboard layout: title + section headers ─────────────────────────────
+    TITLE_ROW       = 0   # rowIndex (0-based) → Sheets row 1
+    SECTION_ROWS    = [21, 48, 69, 90]  # gap rows between chart groups
+    SECTION_LABELS  = [
+        "TOP 15 SKUs BY VOLUME",
+        "DAMAGE & MISSING ANALYSIS",
+        "SKU BREAKDOWN — DAMAGED vs MISSING",
+        "LOSS ANALYSIS",
+    ]
+    NUM_COLS = 16  # merge width (A:P)
+
+    # Write title + section label text
+    ws_dash.batch_update([
+        {"range": "A1",  "values": [["Swiss Beauty — Returns & Refund Tracker"]]},
+        {"range": "A22", "values": [["TOP 15 SKUs BY VOLUME"]]},
+        {"range": "A49", "values": [["DAMAGE & MISSING ANALYSIS"]]},
+        {"range": "A70", "values": [["SKU BREAKDOWN — DAMAGED vs MISSING"]]},
+        {"range": "A91", "values": [["LOSS ANALYSIS"]]},
+    ], value_input_option="USER_ENTERED")
+
+    # Build format/merge requests for title and section headers
+    NAVY   = {"red": 0.08, "green": 0.09, "blue": 0.18}
+    SLATE  = {"red": 0.16, "green": 0.20, "blue": 0.28}
+    WHITE  = {"red": 1.0,  "green": 1.0,  "blue": 1.0}
+
+    def _header_requests(row_idx, bg, font_size, row_px):
+        r = {"sheetId": dash_id, "startRowIndex": row_idx, "endRowIndex": row_idx + 1,
+             "startColumnIndex": 0, "endColumnIndex": NUM_COLS}
+        return [
+            {"unmergeCells":  {"range": r}},
+            {"mergeCells":    {"range": r, "mergeType": "MERGE_ALL"}},
+            {"repeatCell": {
+                "range": r,
+                "cell": {"userEnteredFormat": {
+                    "backgroundColor": bg,
+                    "textFormat": {"foregroundColor": WHITE, "bold": True, "fontSize": font_size},
+                    "horizontalAlignment": "LEFT",
+                    "verticalAlignment":   "MIDDLE",
+                    "padding": {"left": 12},
+                }},
+                "fields": "userEnteredFormat(backgroundColor,textFormat,horizontalAlignment,verticalAlignment,padding)",
+            }},
+            {"updateDimensionProperties": {
+                "range": {"sheetId": dash_id, "dimension": "ROWS",
+                          "startIndex": row_idx, "endIndex": row_idx + 1},
+                "properties": {"pixelSize": row_px},
+                "fields": "pixelSize",
+            }},
+        ]
+
+    layout_requests = []
+    layout_requests += _header_requests(TITLE_ROW, NAVY, 14, 44)
+    for row_idx, label in zip(SECTION_ROWS, SECTION_LABELS):
+        layout_requests += _header_requests(row_idx, SLATE, 11, 30)
+
+    service.spreadsheets().batchUpdate(
+        spreadsheetId=SHEET_ID,
+        body={"requests": layout_requests},
+    ).execute()
 
     # Delete existing charts on Dashboard so we always recreate with fresh ranges
     spreadsheet = service.spreadsheets().get(spreadsheetId=SHEET_ID).execute()
