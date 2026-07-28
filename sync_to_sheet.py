@@ -1029,14 +1029,16 @@ def polish_sheet(service, sh):
             "fields": "gridProperties.frozenRowCount",
         }})
 
-        # Auto-resize all columns
-        requests_list.append({"autoResizeDimensions": {
-            "dimensions": {
+        # Set all columns to 150px (wider than auto-fit default for readability)
+        requests_list.append({"updateDimensionProperties": {
+            "range": {
                 "sheetId": sid,
                 "dimension": "COLUMNS",
                 "startIndex": 0,
                 "endIndex": col_count,
-            }
+            },
+            "properties": {"pixelSize": 150},
+            "fields": "pixelSize",
         }})
 
         # Alternating row band (skip if one already exists)
