@@ -578,7 +578,7 @@ def build_summary_data(sh):
         elif otype == "Refund" and is_combined and refunded > 0:
             loss_refund[m] += refunded + 100   # +₹100 return shipping (only when refund_given tagged)
 
-    LOSS_LABELS = ["Replacement Loss (₹)", "Refund Loss (₹)", "Combined Loss (₹)", "Null MRP Orders"]
+    LOSS_LABELS = ["Replacement Loss (₹)", "Refund Loss (₹)", "Replacement + Refund Given (₹)", "Null MRP Orders"]
     loss_pivot_data = [
         [
             round(loss_replacement[m], 2),
@@ -854,7 +854,7 @@ def create_dashboard_charts(service, sh, ws_cd_id, mom_rows, n_sku_series,
         {"red": 0.23, "green": 0.47, "blue": 0.85},  # blue  – Refund
         {"red": 0.96, "green": 0.60, "blue": 0.07},  # amber – Combined
     ]
-    LOSS_NAMES = ["Replacement Loss (₹)", "Refund Loss (₹)", "Combined Loss (₹)"]
+    LOSS_NAMES = ["Replacement Loss (₹)", "Refund Loss (₹)", "Replacement + Refund Given (₹)"]
     loss_end = n_months + 1
     requests_list.append({"addChart": {"chart": {
         "spec": {
