@@ -614,7 +614,12 @@ def build_summary_data(sh):
     total_loss = sum(loss_replacement.values()) + sum(loss_refund.values()) + sum(loss_combined_full.values()) + sum(loss_combined_part.values())
     total_notes = sum(sum(d.values()) for d in damage_reason_by_month.values())
     print(f"  _ChartData: {n} months, top {len(top_skus)} SKUs, {total_notes} damage notes, ₹{total_loss:,.0f} total loss ({sum(loss_null_count.values())} null-MRP orders).")
-    return ws_cd, mom_rows, len(top_skus), damage_reason_col, damaged_sku_col, len(top_damaged_skus), missing_sku_col, len(top_missing_skus), loss_col
+    return (ws_cd, mom_rows, len(top_skus), damage_reason_col,
+            damaged_sku_col, len(top_damaged_skus),
+            missing_sku_col, len(top_missing_skus),
+            loss_col,
+            sorted_months, top_damaged_skus, damaged_sku_pivot_data,
+            top_missing_skus, missing_sku_pivot_data)
 
 
 def create_dashboard_charts(service, sh, ws_cd_id, mom_rows, n_sku_series,
@@ -1052,16 +1057,17 @@ def polish_sheet(service, sh):
     worksheets    = sh.worksheets()
     requests_list = []
 
-    # Tab order: Dashboard, README, months chronologically, All Data, _ChartData last
+    # Tab order: Dashboard, README, months chronologically, SKU Report, All Data, _ChartData last
     def tab_sort_key(ws):
         if ws.title == "Dashboard":   return (0, "")
         if ws.title == "README":      return (1, "")
-        if ws.title == "All Data":    return (3, "")
-        if ws.title == "_ChartData":  return (4, "")
+        if ws.title == "SKU Report":  return (3, "")
+        if ws.title == "All Data":    return (4, "")
+        if ws.title == "_ChartData":  return (5, "")
         if month_pattern.match(ws.title):
             try:    return (2, datetime.strptime(ws.title, "%B %Y").strftime("%Y%m"))
             except: return (2, ws.title)
-        return (5, ws.title)
+        return (6, ws.title)
 
     sorted_tabs = sorted(worksheets, key=tab_sort_key)
     for idx, ws in enumerate(sorted_tabs):
@@ -1157,6 +1163,39 @@ def polish_sheet(service, sh):
             print("  Tabs reordered, headers frozen, columns resized (banding already applied).")
         else:
             print(f"  Polish warning: {e}")
+
+
+# ── SKU Report tab (for n8n mailer) ──────────────────────────────────────────
+
+def write_sku_report_tab(sh, sorted_months,
+                         top_damaged_skus, damaged_pivot,
+                         top_missing_skus, missing_pivot):
+    """
+    Write a flat 'SKU Report' tab readable by n8n.
+    Columns: SKU | Issue Type | <Month 1> | <Month 2> | ... | Total
+    One row per SKU per issue type (Damaged rows first, then Missing).
+    """
+    TAB_NAME = "SKU Report"
+    try:
+        ws = sh.worksheet(TAB_NAME)
+        ws.clear()
+    except gspread.exceptions.WorksheetNotFound:
+        ws = sh.add_worksheet(title=TAB_NAME, rows=100, cols=20)
+
+    header = ["SKU", "Issue Type"] + sorted_months + ["Total"]
+    rows   = [header]
+
+    for skus, pivot, label in [
+        (top_damaged_skus, damaged_pivot, "Damaged"),
+        (top_missing_skus, missing_pivot, "Missing"),
+    ]:
+        for i, sku in enumerate(skus):
+            monthly = [pivot[m_idx][i] if m_idx < len(pivot) else 0
+                       for m_idx in range(len(sorted_months))]
+            rows.append([sku, label] + monthly + [sum(monthly)])
+
+    ws.update(values=rows, range_name="A1", value_input_option="USER_ENTERED")
+    print(f"  SKU Report tab written ({len(rows)-1} SKU rows).")
 
 
 # ── README tab ────────────────────────────────────────────────────────────────
@@ -1369,9 +1408,11 @@ def main():
 
     # ── 5. Rebuild _ChartData + create Dashboard charts ───────────────────────
     print("\nUpdating chart data...")
-    ws_cd, mom_rows, n_sku_series, damage_reason_col, \
-        damaged_sku_col, n_damaged_skus, missing_sku_col, n_missing_skus, \
-        loss_col = build_summary_data(sh)
+    (ws_cd, mom_rows, n_sku_series, damage_reason_col,
+     damaged_sku_col, n_damaged_skus, missing_sku_col, n_missing_skus,
+     loss_col,
+     sorted_months, top_damaged_skus, damaged_sku_pivot_data,
+     top_missing_skus, missing_sku_pivot_data) = build_summary_data(sh)
     if ws_cd and mom_rows:
         create_dashboard_charts(service, sh, ws_cd.id, mom_rows, n_sku_series,
                                  damage_reason_col,
@@ -1379,6 +1420,9 @@ def main():
                                  missing_sku_col,  n_missing_skus,
                                  loss_col)
         create_month_slicer(service, sh, ws_cd.id, len(mom_rows))
+        write_sku_report_tab(sh, sorted_months,
+                             top_damaged_skus, damaged_sku_pivot_data,
+                             top_missing_skus, missing_sku_pivot_data)
 
     # ── 6. README tab ─────────────────────────────────────────────────────────
     create_readme_tab(service, sh)
