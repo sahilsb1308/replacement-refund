@@ -618,7 +618,9 @@ def build_summary_data(sh):
             damaged_sku_col, len(top_damaged_skus),
             missing_sku_col, len(top_missing_skus),
             loss_col,
-            sorted_months, top_damaged_skus, damaged_sku_pivot_data,
+            sorted_months,
+            top_skus, sku_pivot_data,
+            top_damaged_skus, damaged_sku_pivot_data,
             top_missing_skus, missing_sku_pivot_data)
 
 
@@ -1168,34 +1170,52 @@ def polish_sheet(service, sh):
 # ── SKU Report tab (for n8n mailer) ──────────────────────────────────────────
 
 def write_sku_report_tab(sh, sorted_months,
+                         top_skus, sku_pivot,
                          top_damaged_skus, damaged_pivot,
                          top_missing_skus, missing_pivot):
     """
     Write a flat 'SKU Report' tab readable by n8n.
-    Columns: SKU | Issue Type | <Month 1> | <Month 2> | ... | Total
-    One row per SKU per issue type (Damaged rows first, then Missing).
+    Three sections separated by blank rows:
+      1. Top 15 SKUs by Issue Volume (order count)
+      2. Top Damaged SKUs (damage notes)
+      3. Top Missing SKUs (missing notes)
+    Columns: SKU | Category | <Month 1> | ... | Total
     """
     TAB_NAME = "SKU Report"
     try:
         ws = sh.worksheet(TAB_NAME)
         ws.clear()
     except gspread.exceptions.WorksheetNotFound:
-        ws = sh.add_worksheet(title=TAB_NAME, rows=100, cols=20)
+        ws = sh.add_worksheet(title=TAB_NAME, rows=120, cols=20)
 
-    header = ["SKU", "Issue Type"] + sorted_months + ["Total"]
+    header = ["SKU", "Category"] + sorted_months + ["Total"]
     rows   = [header]
 
-    for skus, pivot, label in [
-        (top_damaged_skus, damaged_pivot, "Damaged"),
-        (top_missing_skus, missing_pivot, "Missing"),
-    ]:
-        for i, sku in enumerate(skus):
-            monthly = [pivot[m_idx][i] if m_idx < len(pivot) else 0
-                       for m_idx in range(len(sorted_months))]
-            rows.append([sku, label] + monthly + [sum(monthly)])
+    # Section 1: Top 15 SKUs by volume
+    rows.append(["--- TOP 15 SKUs BY ISSUE VOLUME ---", "", *[""] * len(sorted_months), ""])
+    for i, sku in enumerate(top_skus):
+        monthly = [sku_pivot[m_idx][i] if m_idx < len(sku_pivot) else 0
+                   for m_idx in range(len(sorted_months))]
+        rows.append([sku, "Issue Volume"] + monthly + [sum(monthly)])
+
+    # Section 2: Damaged SKUs
+    rows.append(["", "", *[""] * len(sorted_months), ""])
+    rows.append(["--- TOP DAMAGED SKUs ---", "", *[""] * len(sorted_months), ""])
+    for i, sku in enumerate(top_damaged_skus):
+        monthly = [damaged_pivot[m_idx][i] if m_idx < len(damaged_pivot) else 0
+                   for m_idx in range(len(sorted_months))]
+        rows.append([sku, "Damaged"] + monthly + [sum(monthly)])
+
+    # Section 3: Missing SKUs
+    rows.append(["", "", *[""] * len(sorted_months), ""])
+    rows.append(["--- TOP MISSING SKUs ---", "", *[""] * len(sorted_months), ""])
+    for i, sku in enumerate(top_missing_skus):
+        monthly = [missing_pivot[m_idx][i] if m_idx < len(missing_pivot) else 0
+                   for m_idx in range(len(sorted_months))]
+        rows.append([sku, "Missing"] + monthly + [sum(monthly)])
 
     ws.update(values=rows, range_name="A1", value_input_option="USER_ENTERED")
-    print(f"  SKU Report tab written ({len(rows)-1} SKU rows).")
+    print(f"  SKU Report tab written ({len(top_skus)} volume + {len(top_damaged_skus)} damaged + {len(top_missing_skus)} missing SKUs).")
 
 
 # ── README tab ────────────────────────────────────────────────────────────────
@@ -1411,7 +1431,9 @@ def main():
     (ws_cd, mom_rows, n_sku_series, damage_reason_col,
      damaged_sku_col, n_damaged_skus, missing_sku_col, n_missing_skus,
      loss_col,
-     sorted_months, top_damaged_skus, damaged_sku_pivot_data,
+     sorted_months,
+     top_skus, sku_pivot_data,
+     top_damaged_skus, damaged_sku_pivot_data,
      top_missing_skus, missing_sku_pivot_data) = build_summary_data(sh)
     if ws_cd and mom_rows:
         create_dashboard_charts(service, sh, ws_cd.id, mom_rows, n_sku_series,
@@ -1421,6 +1443,7 @@ def main():
                                  loss_col)
         create_month_slicer(service, sh, ws_cd.id, len(mom_rows))
         write_sku_report_tab(sh, sorted_months,
+                             top_skus, sku_pivot_data,
                              top_damaged_skus, damaged_sku_pivot_data,
                              top_missing_skus, missing_sku_pivot_data)
 
