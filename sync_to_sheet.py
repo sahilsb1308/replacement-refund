@@ -48,12 +48,13 @@ TARGET_TAGS = {
 MONTH_HEADERS = [
     "Order Number", "Order Date (IST)", "Order Type", "Cancel Reason",
     "Financial Status", "Fulfillment Status",
-    "Actions Taken", "Notes",                               # ← new cols (index 6 & 7)
+    "Actions Taken", "Notes",
     "Customer Name", "Customer Phone", "City", "State",
     "Payment Method", "Order Value (₹)", "Refunded Amount (₹)", "Refund Status",
     "Product 1", "SKU 1", "Qty 1",
     "Product 2", "SKU 2", "Qty 2",
     "Product 3", "SKU 3", "Qty 3",
+    "Clone MRP (₹)", "Order Loss (₹)",                      # ← loss cols
 ]
 
 ALL_DATA_HEADERS = ["Month"] + MONTH_HEADERS
@@ -70,7 +71,7 @@ query FetchOrders($query: String!, $after: String) {
         totalRefundedSet { shopMoney { amount } }
         customer { firstName lastName phone }
         shippingAddress { city province }
-        lineItems(first: 3) { edges { node { name sku quantity } } }
+        lineItems(first: 3) { edges { node { name sku quantity originalUnitPriceSet { shopMoney { amount } } } } }
       }
     }
   }
@@ -171,13 +172,64 @@ def to_ist(utc_str):
     except Exception:
         return utc_str
 
+def _clone_mrp_value(tags, items):
+    """Sum originalUnitPrice × qty for replacement order items.
+    Returns None when MRP can't be determined (price ≤ 1 = clone token price)."""
+    if "Replacement" not in set(tags):
+        return None
+    total = sum(
+        float(((item.get("originalUnitPriceSet") or {}).get("shopMoney") or {}).get("amount", 0) or 0)
+        * int(item.get("quantity") or 0)
+        for item in items
+    )
+    return round(total, 2) if total >= 1.0 else None
+
+
+def _order_loss(tags, items, refunded_str):
+    """Return the financial loss value for this order, or '' if unknown/not applicable.
+
+    Rules (per business logic):
+      Full replacement only   → Clone MRP + ₹200 shipping
+      Partial replacement only→ Clone MRP + ₹100 shipping
+      Replacement + refund    → Clone MRP + Refunded Amount + ₹200/100 shipping
+      Refund only             → Refunded Amount + ₹100 shipping
+      Clone MRP unknown       → '' (null – tracked separately as unknown)
+    """
+    t = set(tags)
+    try:    refunded = float(refunded_str or 0)
+    except: refunded = 0.0
+
+    is_replacement  = "Replacement"   in t
+    is_refund_given = "refund_given"  in t  # refund also issued alongside replacement
+    is_refund_only  = bool(t & {"Refund_initiated", "Refund_Initiated", "Refund_credited"}) and not is_replacement
+    is_full         = "Full_replacement"    in t
+    ship            = 200 if is_full else 100
+
+    if is_replacement:
+        mrp = _clone_mrp_value(tags, items)
+        if mrp is None:
+            return ""   # null — MRP unknown
+        if is_refund_given and refunded > 0:
+            return round(mrp + refunded + ship, 2)   # combined
+        return round(mrp + ship, 2)                   # replacement only
+
+    if is_refund_only and refunded > 0:
+        return round(refunded + 100, 2)               # refund + ₹100 shipping
+
+    return ""
+
+
 def build_row(node):
     tags     = node.get("tags", [])
     customer = node.get("customer") or {}
     addr     = node.get("shippingAddress") or {}
     items    = [e["node"] for e in node.get("lineItems", {}).get("edges", [])]
     while len(items) < 3:
-        items.append({"name": "", "sku": "", "quantity": ""})
+        items.append({"name": "", "sku": "", "quantity": "", "originalUnitPriceSet": None})
+
+    refunded_str = node.get("totalRefundedSet", {}).get("shopMoney", {}).get("amount", "0")
+    mrp          = _clone_mrp_value(tags, items)
+    loss         = _order_loss(tags, items, refunded_str)
 
     return [
         node.get("name", ""),
@@ -186,19 +238,21 @@ def build_row(node):
         cancel_reason(tags),
         node.get("displayFinancialStatus", ""),
         node.get("displayFulfillmentStatus", ""),
-        actions_taken(tags),                                 # col 6 – Actions Taken
-        node.get("note") or "",  # col 7 – Shopify note (blank if none)
+        actions_taken(tags),
+        node.get("note") or "",
         f"{customer.get('firstName') or ''} {customer.get('lastName') or ''}".strip(),
         customer.get("phone", "") or "",
         addr.get("city", "")     or "",
         addr.get("province", "") or "",
         payment_method(tags),
         node.get("totalPriceSet",    {}).get("shopMoney", {}).get("amount", "0"),
-        node.get("totalRefundedSet", {}).get("shopMoney", {}).get("amount", "0"),
+        refunded_str,
         refund_status(tags),
         items[0]["name"], items[0]["sku"], str(items[0]["quantity"]),
         items[1]["name"], items[1]["sku"], str(items[1]["quantity"]),
         items[2]["name"], items[2]["sku"], str(items[2]["quantity"]),
+        str(mrp)  if mrp  is not None else "",   # Clone MRP (₹)
+        str(loss) if loss != ""       else "",   # Order Loss (₹)
     ]
 
 # ── Google Sheets helpers ─────────────────────────────────────────────────────
@@ -221,7 +275,7 @@ def write_tab(ws, headers, rows):
         chunk     = all_rows[i:i + BATCH]
         start_row = i + 1
         ws.update(values=chunk, range_name=f"A{start_row}", value_input_option="USER_ENTERED")
-    last_col = chr(ord("A") + len(headers) - 1)
+    last_col = _col_letter(len(headers) - 1)   # handles >26 cols (AA, AB, …)
     ws.format(f"A1:{last_col}1", {
         "textFormat": {"bold": True, "foregroundColor": {"red": 1, "green": 1, "blue": 1}},
         "backgroundColor": {"red": 0.13, "green": 0.13, "blue": 0.13},
@@ -436,11 +490,10 @@ def build_summary_data(sh):
     missing_sku_col   = damaged_sku_col   + TOP_DAMAGE_SKUS    + 2
 
     # ── Write _ChartData ──────────────────────────────────────────────────────
-    ws_cd = get_or_create_tab(sh, "_ChartData", rows=max(n + 10, 20), cols=60)
+    ws_cd = get_or_create_tab(sh, "_ChartData", rows=max(n + 10, 20), cols=70)
     ws_cd.clear()
-    # Resize to 60 cols if the existing tab is too narrow for the damage pivot columns
-    if ws_cd.col_count < 60:
-        ws_cd.resize(rows=max(n + 10, 20), cols=60)
+    if ws_cd.col_count < 70:
+        ws_cd.resize(rows=max(n + 10, 20), cols=70)
 
     # A) MoM cols A–G, rows 1..n+1
     ws_cd.update(values=[mom_header] + mom_rows, range_name="A1", value_input_option="USER_ENTERED")
@@ -474,15 +527,75 @@ def build_summary_data(sh):
         ws_cd.update(values=[top_missing_skus],     range_name=f"{mf_letter}1", value_input_option="USER_ENTERED")
         ws_cd.update(values=missing_sku_pivot_data, range_name=f"{mf_letter}2", value_input_option="USER_ENTERED")
 
+    # ── Loss summary pivot ────────────────────────────────────────────────────
+    col_actions   = header.index("Actions Taken")       if "Actions Taken"       in header else None
+    col_refunded  = header.index("Refunded Amount (₹)") if "Refunded Amount (₹)" in header else None
+    col_clone_mrp = header.index("Clone MRP (₹)")       if "Clone MRP (₹)"       in header else None
+
+    def _sf(v):
+        try:    return float(v or 0)
+        except: return 0.0
+
+    loss_replacement: dict = defaultdict(float)
+    loss_refund:      dict = defaultdict(float)
+    loss_combined:    dict = defaultdict(float)
+    loss_null_count:  dict = defaultdict(int)
+
+    for row in records[1:]:
+        m     = row[col_mon]  if len(row) > col_mon  else ""
+        otype = row[col_type] if len(row) > col_type else ""
+        if not m:
+            continue
+        actions   = (row[col_actions]   if col_actions   and len(row) > col_actions   else "") or ""
+        refunded  = _sf(row[col_refunded]  if col_refunded  and len(row) > col_refunded  else 0)
+        clone_mrp_val = _sf(row[col_clone_mrp] if col_clone_mrp and len(row) > col_clone_mrp else 0)
+
+        is_full      = "Full Replacement"    in actions
+        is_combined  = "Refund Given"        in actions  # replacement + refund on same order
+        ship         = 200 if is_full else 100
+
+        if otype == "Replacement":
+            if is_combined:
+                if clone_mrp_val >= 1:
+                    loss_combined[m] += clone_mrp_val + refunded + ship
+                else:
+                    loss_null_count[m] += 1
+            else:
+                if clone_mrp_val >= 1:
+                    loss_replacement[m] += clone_mrp_val + ship
+                else:
+                    loss_null_count[m] += 1
+        elif otype == "Refund" and refunded > 0:
+            loss_refund[m] += refunded + 100   # +₹100 return shipping
+
+    LOSS_LABELS = ["Replacement Loss (₹)", "Refund Loss (₹)", "Combined Loss (₹)", "Null MRP Orders"]
+    loss_pivot_data = [
+        [
+            round(loss_replacement[m], 2),
+            round(loss_refund[m],      2),
+            round(loss_combined[m],    2),
+            loss_null_count[m],
+        ]
+        for m in sorted_months
+    ]
+
+    loss_col = missing_sku_col + TOP_DAMAGE_SKUS + 2
+    ll_letter = _col_letter(loss_col)
+    ws_cd.update(values=[LOSS_LABELS],    range_name=f"{ll_letter}1", value_input_option="USER_ENTERED")
+    if loss_pivot_data:
+        ws_cd.update(values=loss_pivot_data, range_name=f"{ll_letter}2", value_input_option="USER_ENTERED")
+
+    total_loss = sum(loss_replacement.values()) + sum(loss_refund.values()) + sum(loss_combined.values())
     total_notes = sum(sum(d.values()) for d in damage_reason_by_month.values())
-    print(f"  _ChartData: {n} months, top {len(top_skus)} SKUs, {total_notes} damage/missing notes parsed.")
-    return ws_cd, mom_rows, len(top_skus), damage_reason_col, damaged_sku_col, len(top_damaged_skus), missing_sku_col, len(top_missing_skus)
+    print(f"  _ChartData: {n} months, top {len(top_skus)} SKUs, {total_notes} damage notes, ₹{total_loss:,.0f} total loss ({sum(loss_null_count.values())} null-MRP orders).")
+    return ws_cd, mom_rows, len(top_skus), damage_reason_col, damaged_sku_col, len(top_damaged_skus), missing_sku_col, len(top_missing_skus), loss_col
 
 
 def create_dashboard_charts(service, sh, ws_cd_id, mom_rows, n_sku_series,
                              damage_reason_col,
                              damaged_sku_col, n_damaged_skus,
-                             missing_sku_col,  n_missing_skus):
+                             missing_sku_col,  n_missing_skus,
+                             loss_col):
     """
     Create charts on the Dashboard tab using the Sheets API.
     Skips creation if charts already exist on that sheet.
@@ -725,12 +838,49 @@ def create_dashboard_charts(service, sh, ws_cd_id, mom_rows, n_sku_series,
             }},
         }}})
 
+    # ── Chart 7: Monthly Loss Breakdown (₹) — stacked column ─────────────────
+    LOSS_COLORS = [
+        {"red": 0.83, "green": 0.18, "blue": 0.18},  # red   – Replacement
+        {"red": 0.23, "green": 0.47, "blue": 0.85},  # blue  – Refund
+        {"red": 0.96, "green": 0.60, "blue": 0.07},  # amber – Combined
+    ]
+    LOSS_NAMES = ["Replacement Loss (₹)", "Refund Loss (₹)", "Combined Loss (₹)"]
+    loss_end = n_months + 1
+    requests_list.append({"addChart": {"chart": {
+        "spec": {
+            "title": "Monthly Loss Breakdown (₹)",
+            "basicChart": {
+                "chartType": "COLUMN",
+                "stackedType": "STACKED",
+                "legendPosition": "BOTTOM_LEGEND",
+                "domains": [{"domain": {"sourceRange": {"sources": [
+                    col_range(cd_id, 0, loss_end, 0)
+                ]}}}],
+                "series": [
+                    {
+                        "series": {"sourceRange": {"sources": [
+                            col_range(cd_id, 0, loss_end, loss_col + i)
+                        ]}},
+                        "targetAxis": "LEFT_AXIS",
+                        "color": LOSS_COLORS[i],
+                    }
+                    for i in range(3)  # 3 loss types; skip col +3 (null count)
+                ],
+                "headerCount": 1,
+            },
+        },
+        "position": {"overlayPosition": {
+            "anchorCell": {"sheetId": dash_id, "rowIndex": 92, "columnIndex": 0},
+            "widthPixels": 700, "heightPixels": 400,
+        }},
+    }}})
+
     service.spreadsheets().batchUpdate(
         spreadsheetId=SHEET_ID,
         body={"requests": requests_list},
     ).execute()
-    n_charts = 4 + (1 if n_damaged_skus > 0 else 0) + (1 if n_missing_skus > 0 else 0)
-    print(f"  Dashboard charts created ({n_charts} total: MoM + donut + SKU + reason + damaged SKU + missing SKU).")
+    n_charts = 4 + (1 if n_damaged_skus > 0 else 0) + (1 if n_missing_skus > 0 else 0) + 1
+    print(f"  Dashboard charts created ({n_charts} total: MoM + donut + SKU + reason + damaged SKU + missing SKU + loss).")
 
 
 # ── Dashboard slicer ─────────────────────────────────────────────────────────
@@ -965,12 +1115,14 @@ def main():
     # ── 5. Rebuild _ChartData + create Dashboard charts ───────────────────────
     print("\nUpdating chart data...")
     ws_cd, mom_rows, n_sku_series, damage_reason_col, \
-        damaged_sku_col, n_damaged_skus, missing_sku_col, n_missing_skus = build_summary_data(sh)
+        damaged_sku_col, n_damaged_skus, missing_sku_col, n_missing_skus, \
+        loss_col = build_summary_data(sh)
     if ws_cd and mom_rows:
         create_dashboard_charts(service, sh, ws_cd.id, mom_rows, n_sku_series,
                                  damage_reason_col,
                                  damaged_sku_col, n_damaged_skus,
-                                 missing_sku_col,  n_missing_skus)
+                                 missing_sku_col,  n_missing_skus,
+                                 loss_col)
         create_month_slicer(service, sh, ws_cd.id, len(mom_rows))
 
     # ── 6. Polish the sheet ───────────────────────────────────────────────────
