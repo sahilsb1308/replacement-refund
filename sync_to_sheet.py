@@ -764,7 +764,7 @@ def create_dashboard_charts(service, sh, ws_cd_id, mom_rows, n_sku_series,
         },
         "position": {"overlayPosition": {
             "anchorCell": {"sheetId": dash_id, "rowIndex": 1, "columnIndex": 0},
-            "widthPixels": 620, "heightPixels": 380,
+            "widthPixels": 760, "heightPixels": 390,
         }},
     }}})
 
@@ -785,8 +785,8 @@ def create_dashboard_charts(service, sh, ws_cd_id, mom_rows, n_sku_series,
             },
         },
         "position": {"overlayPosition": {
-            "anchorCell": {"sheetId": dash_id, "rowIndex": 1, "columnIndex": 7},
-            "widthPixels": 420, "heightPixels": 380,
+            "anchorCell": {"sheetId": dash_id, "rowIndex": 1, "columnIndex": 5},
+            "widthPixels": 500, "heightPixels": 390,
         }},
     }}})
 
@@ -818,7 +818,7 @@ def create_dashboard_charts(service, sh, ws_cd_id, mom_rows, n_sku_series,
         },
         "position": {"overlayPosition": {
             "anchorCell": {"sheetId": dash_id, "rowIndex": 23, "columnIndex": 0},
-            "widthPixels": 1050, "heightPixels": 520,
+            "widthPixels": 1240, "heightPixels": 510,
         }},
     }}})
 
@@ -857,7 +857,7 @@ def create_dashboard_charts(service, sh, ws_cd_id, mom_rows, n_sku_series,
         },
         "position": {"overlayPosition": {
             "anchorCell": {"sheetId": dash_id, "rowIndex": 50, "columnIndex": 0},
-            "widthPixels": 560, "heightPixels": 380,
+            "widthPixels": 780, "heightPixels": 380,
         }},
     }}})
 
@@ -889,7 +889,7 @@ def create_dashboard_charts(service, sh, ws_cd_id, mom_rows, n_sku_series,
             },
             "position": {"overlayPosition": {
                 "anchorCell": {"sheetId": dash_id, "rowIndex": 70, "columnIndex": 0},
-                "widthPixels": 560, "heightPixels": 380,
+                "widthPixels": 630, "heightPixels": 400,
             }},
         }}})
 
@@ -919,8 +919,8 @@ def create_dashboard_charts(service, sh, ws_cd_id, mom_rows, n_sku_series,
                 },
             },
             "position": {"overlayPosition": {
-                "anchorCell": {"sheetId": dash_id, "rowIndex": 70, "columnIndex": 9},
-                "widthPixels": 560, "heightPixels": 380,
+                "anchorCell": {"sheetId": dash_id, "rowIndex": 70, "columnIndex": 4},
+                "widthPixels": 630, "heightPixels": 400,
             }},
         }}})
 
@@ -961,7 +961,7 @@ def create_dashboard_charts(service, sh, ws_cd_id, mom_rows, n_sku_series,
         },
         "position": {"overlayPosition": {
             "anchorCell": {"sheetId": dash_id, "rowIndex": 92, "columnIndex": 0},
-            "widthPixels": 700, "heightPixels": 400,
+            "widthPixels": 980, "heightPixels": 440,
         }},
     }}})
 
@@ -1052,15 +1052,16 @@ def polish_sheet(service, sh):
     worksheets    = sh.worksheets()
     requests_list = []
 
-    # Tab order: Dashboard first, then months chronologically, then All Data, _ChartData last
+    # Tab order: Dashboard, README, months chronologically, All Data, _ChartData last
     def tab_sort_key(ws):
         if ws.title == "Dashboard":   return (0, "")
-        if ws.title == "All Data":    return (2, "")
-        if ws.title == "_ChartData":  return (3, "")
+        if ws.title == "README":      return (1, "")
+        if ws.title == "All Data":    return (3, "")
+        if ws.title == "_ChartData":  return (4, "")
         if month_pattern.match(ws.title):
-            try:    return (1, datetime.strptime(ws.title, "%B %Y").strftime("%Y%m"))
-            except: return (1, ws.title)
-        return (4, ws.title)
+            try:    return (2, datetime.strptime(ws.title, "%B %Y").strftime("%Y%m"))
+            except: return (2, ws.title)
+        return (5, ws.title)
 
     sorted_tabs = sorted(worksheets, key=tab_sort_key)
     for idx, ws in enumerate(sorted_tabs):
@@ -1158,6 +1159,168 @@ def polish_sheet(service, sh):
             print(f"  Polish warning: {e}")
 
 
+# ── README tab ────────────────────────────────────────────────────────────────
+
+def create_readme_tab(service, sh):
+    """Create or refresh a README tab explaining the sheet structure."""
+    from datetime import date
+
+    TAB_NAME = "README"
+    try:
+        ws = sh.worksheet(TAB_NAME)
+        ws.clear()
+    except gspread.exceptions.WorksheetNotFound:
+        ws = sh.add_worksheet(title=TAB_NAME, rows=80, cols=4)
+
+    ws_id = ws.id
+    today = date.today().strftime("%d %b %Y")
+
+    ROWS = [
+        # (row_text_col_A, row_text_col_B, row_type)
+        # types: "title", "subtitle", "section", "subheader", "body", "blank", "twoCol"
+        ("SWISS BEAUTY — RETURNS & REFUND TRACKER",           "",                          "title"),
+        (f"Swiss Beauty  |  Updated: {today}",                "",                          "subtitle"),
+        ("",                                                   "",                          "blank"),
+        ("WHAT IS THIS SHEET?",                               "",                          "section"),
+        ("A monthly tracking system for all replacement, refund, RTO, and return orders.", "", "body"),
+        ("Run the Python sync script each month to pull orders from Shopify and auto-update all tabs and charts.", "", "body"),
+        ("",                                                   "",                          "blank"),
+        ("HOW TO RUN IT",                                     "",                          "section"),
+        ("Command",                                           "What it does",              "subheader"),
+        ("python sync_to_sheet.py 2026-07",                  "Sync July 2026 orders",     "twoCol"),
+        ("python sync_to_sheet.py 2026-05",                  "Sync May 2026 orders (backfill)", "twoCol"),
+        ("",                                                   "",                          "blank"),
+        ("THE TABS IN THIS FILE",                             "",                          "section"),
+        ("Tab Name",                                          "What it is",                "subheader"),
+        ("README",                                            "This guide.",               "twoCol"),
+        ("Dashboard",                                         "All charts: MoM trends, SKU breakdown, damage analysis, loss summary.", "twoCol"),
+        ("May 2026 / June 2026 / July 2026",                 "One row per order for that month. All columns filled automatically.", "twoCol"),
+        ("All Data",                                          "All months combined into one table. Source for cross-month analysis.", "twoCol"),
+        ("_ChartData",                                        "Pivot data used by Dashboard charts. Do not edit manually.", "twoCol"),
+        ("",                                                   "",                          "blank"),
+        ("COLUMNS IN EACH MONTH TAB",                        "",                          "section"),
+        ("Column",                                            "What it tells you",         "subheader"),
+        ("Order Number",                                      "Shopify order ID (e.g. #1234567).", "twoCol"),
+        ("Order Date (IST)",                                  "Date and time the order was placed, in IST.", "twoCol"),
+        ("Order Type",                                        "Replacement / Refund / RTO / Returned / Undelivered / Other.", "twoCol"),
+        ("Cancel Reason",                                     "Why it was cancelled (Customer Cancel, IVR Cancel, etc.).", "twoCol"),
+        ("Actions Taken",                                     "What the team did: Full Replacement / Partial Replacement / Refund Given.", "twoCol"),
+        ("Notes",                                             "Raw Shopify order notes — includes damage reason and affected SKU.", "twoCol"),
+        ("Clone MRP (₹)",                                    "MRP of items in the replacement clone order (from Shopify line item prices).", "twoCol"),
+        ("Order Loss (₹)",                                   "Calculated financial loss: Clone MRP + shipping ± refund amount.", "twoCol"),
+        ("",                                                   "",                          "blank"),
+        ("HOW LOSS IS CALCULATED",                           "",                          "section"),
+        ("Scenario",                                          "Formula",                   "subheader"),
+        ("Full Replacement only",                             "Clone MRP + ₹200 shipping", "twoCol"),
+        ("Partial Replacement only",                          "Clone MRP + ₹100 shipping", "twoCol"),
+        ("Full Replacement + Refund Given",                   "Clone MRP + Refunded Amount + ₹200 shipping", "twoCol"),
+        ("Partial Replacement + Refund Given",                "Clone MRP + Refunded Amount + ₹100 shipping", "twoCol"),
+        ("Refund only (refund_given tag)",                    "Refunded Amount + ₹100 shipping", "twoCol"),
+        ("Customer Cancel",                                   "EXCLUDED — not counted as loss.", "twoCol"),
+        ("No Actions Taken",                                  "EXCLUDED — only tagged actions are counted.", "twoCol"),
+        ("",                                                   "",                          "blank"),
+        ("DASHBOARD CHARTS",                                  "",                          "section"),
+        ("Chart",                                             "What it shows",             "subheader"),
+        ("Month-on-Month Order Concerns",                     "Count of each order type per month (stacked column).", "twoCol"),
+        ("Order Type Breakdown",                              "Share of each order type overall (donut).", "twoCol"),
+        ("Top 15 SKUs by Volume",                            "Which SKUs appear most in issue orders (% stacked bar).", "twoCol"),
+        ("Damage & Missing — Reason Breakdown",              "Count of Damaged / Missing / Wrong / Used / Other per month.", "twoCol"),
+        ("Damaged SKUs / Missing SKUs",                      "Which specific SKUs are most reported as damaged or missing.", "twoCol"),
+        ("Monthly Loss Breakdown (₹)",                       "Replacement Loss, Refund Loss, and combined scenarios by month.", "twoCol"),
+    ]
+
+    # Write values
+    ws.batch_update([
+        {"range": f"A{i+1}:B{i+1}", "values": [[r[0], r[1]]]}
+        for i, r in enumerate(ROWS)
+    ], value_input_option="USER_ENTERED")
+
+    # Build format requests
+    NAVY    = {"red": 0.08, "green": 0.09, "blue": 0.18}
+    BLUE    = {"red": 0.18, "green": 0.38, "blue": 0.62}
+    LBLUE   = {"red": 0.84, "green": 0.91, "blue": 0.97}
+    LGREY   = {"red": 0.95, "green": 0.95, "blue": 0.95}
+    WHITE   = {"red": 1.0,  "green": 1.0,  "blue": 1.0}
+    DARK    = {"red": 0.13, "green": 0.13, "blue": 0.13}
+    ACCENT  = {"red": 0.10, "green": 0.45, "blue": 0.25}
+
+    reqs = []
+
+    def _row_range(r_idx, end_col=2):
+        return {"sheetId": ws_id, "startRowIndex": r_idx, "endRowIndex": r_idx + 1,
+                "startColumnIndex": 0, "endColumnIndex": end_col}
+
+    def _fmt(r_idx, bg, fg, bold, font_size, end_col=2, italic=False, align="LEFT"):
+        return {"repeatCell": {
+            "range": _row_range(r_idx, end_col),
+            "cell": {"userEnteredFormat": {
+                "backgroundColor": bg,
+                "textFormat": {"foregroundColor": fg, "bold": bold, "fontSize": font_size, "italic": italic},
+                "horizontalAlignment": align,
+                "verticalAlignment": "MIDDLE",
+                "padding": {"left": 10, "top": 4, "bottom": 4},
+            }},
+            "fields": "userEnteredFormat(backgroundColor,textFormat,horizontalAlignment,verticalAlignment,padding)",
+        }}
+
+    def _merge(r_idx):
+        r = _row_range(r_idx, 4)
+        return [
+            {"unmergeCells": {"range": r}},
+            {"mergeCells":   {"range": r, "mergeType": "MERGE_ALL"}},
+        ]
+
+    def _row_height(r_idx, px):
+        return {"updateDimensionProperties": {
+            "range": {"sheetId": ws_id, "dimension": "ROWS", "startIndex": r_idx, "endIndex": r_idx + 1},
+            "properties": {"pixelSize": px}, "fields": "pixelSize",
+        }}
+
+    for i, (_, _, rtype) in enumerate(ROWS):
+        if rtype == "title":
+            reqs += _merge(i)
+            reqs.append(_fmt(i, NAVY, WHITE, True, 14, end_col=4))
+            reqs.append(_row_height(i, 44))
+        elif rtype == "subtitle":
+            reqs += _merge(i)
+            reqs.append(_fmt(i, NAVY, {"red": 0.75, "green": 0.85, "blue": 1.0}, False, 10, end_col=4, italic=True))
+            reqs.append(_row_height(i, 26))
+        elif rtype == "section":
+            reqs += _merge(i)
+            reqs.append(_fmt(i, BLUE, WHITE, True, 11, end_col=4))
+            reqs.append(_row_height(i, 30))
+        elif rtype == "subheader":
+            reqs.append(_fmt(i, LGREY, DARK, True, 10))
+            reqs.append(_row_height(i, 24))
+        elif rtype == "twoCol":
+            reqs.append(_fmt(i, WHITE, DARK, False, 10))
+            reqs.append(_row_height(i, 22))
+        elif rtype == "body":
+            reqs += _merge(i)
+            reqs.append(_fmt(i, WHITE, DARK, False, 10, end_col=4))
+            reqs.append(_row_height(i, 22))
+        elif rtype == "blank":
+            reqs.append(_row_height(i, 10))
+
+    # Column widths: A wide, B wider
+    reqs += [
+        {"updateDimensionProperties": {
+            "range": {"sheetId": ws_id, "dimension": "COLUMNS", "startIndex": 0, "endIndex": 1},
+            "properties": {"pixelSize": 340}, "fields": "pixelSize",
+        }},
+        {"updateDimensionProperties": {
+            "range": {"sheetId": ws_id, "dimension": "COLUMNS", "startIndex": 1, "endIndex": 2},
+            "properties": {"pixelSize": 520}, "fields": "pixelSize",
+        }},
+    ]
+
+    service.spreadsheets().batchUpdate(
+        spreadsheetId=SHEET_ID,
+        body={"requests": reqs},
+    ).execute()
+    print("  README tab created/refreshed.")
+
+
 # ── Entry point ───────────────────────────────────────────────────────────────
 
 def parse_month_arg(arg: str):
@@ -1217,7 +1380,10 @@ def main():
                                  loss_col)
         create_month_slicer(service, sh, ws_cd.id, len(mom_rows))
 
-    # ── 6. Polish the sheet ───────────────────────────────────────────────────
+    # ── 6. README tab ─────────────────────────────────────────────────────────
+    create_readme_tab(service, sh)
+
+    # ── 7. Polish the sheet ───────────────────────────────────────────────────
     print("\nPolishing sheet...")
     polish_sheet(service, sh)
 
