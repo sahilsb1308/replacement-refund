@@ -199,16 +199,18 @@ def _order_loss(tags, items, refunded_str):
     try:    refunded = float(refunded_str or 0)
     except: refunded = 0.0
 
-    is_replacement  = "Replacement"   in t
-    is_refund_given = "refund_given"  in t  # refund also issued alongside replacement
-    is_refund_only  = bool(t & {"Refund_initiated", "Refund_Initiated", "Refund_credited"}) and not is_replacement
     is_full         = "Full_replacement"    in t
+    is_partial      = "Partial_replacement" in t
+    is_refund_given = "refund_given"        in t
+    is_replacement  = "Replacement"         in t
+    is_refund_only  = bool(t & {"Refund_initiated", "Refund_Initiated", "Refund_credited"}) and not is_replacement
     ship            = 200 if is_full else 100
 
+    # Only calculate loss where an action is explicitly recorded
+    if not (is_full or is_partial or is_refund_given):
+        return ""
+
     if is_replacement:
-        # Only process orders where an action is explicitly recorded
-        if not (is_full or "Partial_replacement" in t or is_refund_given):
-            return ""   # no action taken — skip
         mrp = _clone_mrp_value(tags, items)
         if mrp is None:
             return ""   # null — MRP unknown
@@ -216,7 +218,7 @@ def _order_loss(tags, items, refunded_str):
             return round(mrp + refunded + ship, 2)   # combined
         return round(mrp + ship, 2)                   # replacement only
 
-    if is_refund_only and refunded > 0:
+    if is_refund_only and is_refund_given and refunded > 0:
         return round(refunded + 100, 2)               # refund + ₹100 shipping
 
     return ""
@@ -572,8 +574,8 @@ def build_summary_data(sh):
                     loss_replacement[m] += clone_mrp_val + ship
                 else:
                     loss_null_count[m] += 1
-        elif otype == "Refund" and refunded > 0:
-            loss_refund[m] += refunded + 100   # +₹100 return shipping
+        elif otype == "Refund" and is_combined and refunded > 0:
+            loss_refund[m] += refunded + 100   # +₹100 return shipping (only when refund_given tagged)
 
     LOSS_LABELS = ["Replacement Loss (₹)", "Refund Loss (₹)", "Combined Loss (₹)", "Null MRP Orders"]
     loss_pivot_data = [
