@@ -546,10 +546,11 @@ def build_summary_data(sh):
         try:    return float(v or 0)
         except: return 0.0
 
-    loss_replacement: dict = defaultdict(float)
-    loss_refund:      dict = defaultdict(float)
-    loss_combined:    dict = defaultdict(float)
-    loss_null_count:  dict = defaultdict(int)
+    loss_replacement:    dict = defaultdict(float)
+    loss_refund:         dict = defaultdict(float)
+    loss_combined_full:  dict = defaultdict(float)
+    loss_combined_part:  dict = defaultdict(float)
+    loss_null_count:     dict = defaultdict(int)
 
     for row in records[1:]:
         m     = row[col_mon]  if len(row) > col_mon  else ""
@@ -574,7 +575,10 @@ def build_summary_data(sh):
                 continue   # no action taken — skip from loss entirely
             if is_combined:
                 if clone_mrp_val >= 1:
-                    loss_combined[m] += clone_mrp_val + refunded + ship
+                    if is_full:
+                        loss_combined_full[m] += clone_mrp_val + refunded + ship
+                    else:
+                        loss_combined_part[m] += clone_mrp_val + refunded + ship
                 else:
                     loss_null_count[m] += 1
             else:
@@ -585,12 +589,17 @@ def build_summary_data(sh):
         elif otype == "Refund" and is_combined and refunded > 0:
             loss_refund[m] += refunded + 100   # +₹100 return shipping (only when refund_given tagged)
 
-    LOSS_LABELS = ["Replacement Loss (₹)", "Refund Loss (₹)", "Replacement + Refund Given (₹)", "Null MRP Orders"]
+    LOSS_LABELS = [
+        "Replacement Loss (₹)", "Refund Loss (₹)",
+        "Full Replacement + Refund Given (₹)", "Partial Replacement + Refund Given (₹)",
+        "Null MRP Orders",
+    ]
     loss_pivot_data = [
         [
-            round(loss_replacement[m], 2),
-            round(loss_refund[m],      2),
-            round(loss_combined[m],    2),
+            round(loss_replacement[m],   2),
+            round(loss_refund[m],        2),
+            round(loss_combined_full[m], 2),
+            round(loss_combined_part[m], 2),
             loss_null_count[m],
         ]
         for m in sorted_months
@@ -602,7 +611,7 @@ def build_summary_data(sh):
     if loss_pivot_data:
         ws_cd.update(values=loss_pivot_data, range_name=f"{ll_letter}2", value_input_option="USER_ENTERED")
 
-    total_loss = sum(loss_replacement.values()) + sum(loss_refund.values()) + sum(loss_combined.values())
+    total_loss = sum(loss_replacement.values()) + sum(loss_refund.values()) + sum(loss_combined_full.values()) + sum(loss_combined_part.values())
     total_notes = sum(sum(d.values()) for d in damage_reason_by_month.values())
     print(f"  _ChartData: {n} months, top {len(top_skus)} SKUs, {total_notes} damage notes, ₹{total_loss:,.0f} total loss ({sum(loss_null_count.values())} null-MRP orders).")
     return ws_cd, mom_rows, len(top_skus), damage_reason_col, damaged_sku_col, len(top_damaged_skus), missing_sku_col, len(top_missing_skus), loss_col
@@ -857,11 +866,15 @@ def create_dashboard_charts(service, sh, ws_cd_id, mom_rows, n_sku_series,
 
     # ── Chart 7: Monthly Loss Breakdown (₹) — stacked column ─────────────────
     LOSS_COLORS = [
-        {"red": 0.83, "green": 0.18, "blue": 0.18},  # red   – Replacement
-        {"red": 0.23, "green": 0.47, "blue": 0.85},  # blue  – Refund
-        {"red": 0.96, "green": 0.60, "blue": 0.07},  # amber – Combined
+        {"red": 0.83, "green": 0.18, "blue": 0.18},  # red    – Replacement
+        {"red": 0.23, "green": 0.47, "blue": 0.85},  # blue   – Refund
+        {"red": 0.96, "green": 0.60, "blue": 0.07},  # amber  – Full + Refund
+        {"red": 0.60, "green": 0.20, "blue": 0.80},  # purple – Partial + Refund
     ]
-    LOSS_NAMES = ["Replacement Loss (₹)", "Refund Loss (₹)", "Replacement + Refund Given (₹)"]
+    LOSS_NAMES = [
+        "Replacement Loss (₹)", "Refund Loss (₹)",
+        "Full Replacement + Refund Given (₹)", "Partial Replacement + Refund Given (₹)",
+    ]
     loss_end = n_months + 1
     requests_list.append({"addChart": {"chart": {
         "spec": {
