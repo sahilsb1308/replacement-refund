@@ -206,6 +206,9 @@ def _order_loss(tags, items, refunded_str):
     ship            = 200 if is_full else 100
 
     if is_replacement:
+        # Only process orders where an action is explicitly recorded
+        if not (is_full or "Partial_replacement" in t or is_refund_given):
+            return ""   # no action taken — skip
         mrp = _clone_mrp_value(tags, items)
         if mrp is None:
             return ""   # null — MRP unknown
@@ -551,10 +554,14 @@ def build_summary_data(sh):
         clone_mrp_val = _sf(row[col_clone_mrp] if col_clone_mrp and len(row) > col_clone_mrp else 0)
 
         is_full      = "Full Replacement"    in actions
+        is_partial   = "Partial Replacement" in actions
         is_combined  = "Refund Given"        in actions  # replacement + refund on same order
         ship         = 200 if is_full else 100
 
         if otype == "Replacement":
+            # Only count orders where an action is explicitly recorded
+            if not (is_full or is_partial or is_combined):
+                continue   # no action taken — skip from loss entirely
             if is_combined:
                 if clone_mrp_val >= 1:
                     loss_combined[m] += clone_mrp_val + refunded + ship
