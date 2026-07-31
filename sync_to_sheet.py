@@ -316,7 +316,7 @@ def write_tab(ws, headers, rows):
     for i in range(0, len(all_rows), BATCH):
         chunk     = all_rows[i:i + BATCH]
         start_row = i + 1
-        ws.update(values=chunk, range_name=f"A{start_row}", value_input_option="USER_ENTERED")
+        _with_retry(ws.update, values=chunk, range_name=f"A{start_row}", value_input_option="USER_ENTERED")
     last_col = _col_letter(len(headers) - 1)   # handles >26 cols (AA, AB, …)
     ws.format(f"A1:{last_col}1", {
         "textFormat": {"bold": True, "foregroundColor": {"red": 1, "green": 1, "blue": 1}},
@@ -558,49 +558,52 @@ def build_summary_data(sh):
     ws_cd.resize(rows=max(n + 10, 20), cols=100)   # force-expand regardless of cached count
     ws_cd.clear()
 
+    # Build all chart data writes as a single batch to avoid 429 rate limits
+    cd_batch = []
+
     # A) MoM cols A–G, rows 1..n+1
-    ws_cd.update(values=[mom_header] + mom_rows, range_name="A1", value_input_option="USER_ENTERED")
+    cd_batch.append({"range": "A1", "values": [mom_header] + mom_rows})
 
     # B) Donut cols J–K — SUBTOTAL recalcs when slicer hides MoM rows
     donut_data = [["Order Type", "Count"]] + [
         [t, f"=SUBTOTAL(9,{col}2:{col}{n + 1})"]
         for t, col in zip(ORDER_TYPES, ["B", "C", "D", "E", "F"])
     ]
-    ws_cd.update(values=donut_data, range_name="J1", value_input_option="USER_ENTERED")
+    cd_batch.append({"range": "J1", "values": donut_data})
 
     # C) SKU pivot cols M+, SAME rows as MoM — header in row 1, data in rows 2..n+1
-    ws_cd.update(values=[top_skus],      range_name="M1", value_input_option="USER_ENTERED")
-    ws_cd.update(values=sku_pivot_data,  range_name="M2", value_input_option="USER_ENTERED")
+    cd_batch.append({"range": "M1", "values": [top_skus]})
+    cd_batch.append({"range": "M2", "values": sku_pivot_data})
 
     # D) Damage reason pivot — same row structure as MoM
     dr_letter = _col_letter(damage_reason_col)
-    ws_cd.update(values=[REASON_LABELS],    range_name=f"{dr_letter}1", value_input_option="USER_ENTERED")
+    cd_batch.append({"range": f"{dr_letter}1", "values": [REASON_LABELS]})
     if reason_pivot_data:
-        ws_cd.update(values=reason_pivot_data, range_name=f"{dr_letter}2", value_input_option="USER_ENTERED")
+        cd_batch.append({"range": f"{dr_letter}2", "values": reason_pivot_data})
 
     # E) Damaged SKU pivot (reason == 'Damaged' only)
     if top_damaged_skus:
         de_letter = _col_letter(damaged_sku_col)
-        ws_cd.update(values=[top_damaged_skus],     range_name=f"{de_letter}1", value_input_option="USER_ENTERED")
-        ws_cd.update(values=damaged_sku_pivot_data, range_name=f"{de_letter}2", value_input_option="USER_ENTERED")
+        cd_batch.append({"range": f"{de_letter}1", "values": [top_damaged_skus]})
+        cd_batch.append({"range": f"{de_letter}2", "values": damaged_sku_pivot_data})
 
     # F) Missing SKU pivot (reason == 'Missing' only)
     if top_missing_skus:
         mf_letter = _col_letter(missing_sku_col)
-        ws_cd.update(values=[top_missing_skus],     range_name=f"{mf_letter}1", value_input_option="USER_ENTERED")
-        ws_cd.update(values=missing_sku_pivot_data, range_name=f"{mf_letter}2", value_input_option="USER_ENTERED")
+        cd_batch.append({"range": f"{mf_letter}1", "values": [top_missing_skus]})
+        cd_batch.append({"range": f"{mf_letter}2", "values": missing_sku_pivot_data})
 
     # G) Used SKU pivot
     if top_used_skus:
         uf_letter = _col_letter(used_sku_col)
-        ws_cd.update(values=[top_used_skus],     range_name=f"{uf_letter}1", value_input_option="USER_ENTERED")
-        ws_cd.update(values=used_sku_pivot_data, range_name=f"{uf_letter}2", value_input_option="USER_ENTERED")
+        cd_batch.append({"range": f"{uf_letter}1", "values": [top_used_skus]})
+        cd_batch.append({"range": f"{uf_letter}2", "values": used_sku_pivot_data})
 
     # H) Wrong Item SKU pivot
     if top_wrong_skus:
         wf_letter = _col_letter(wrong_sku_col)
-        ws_cd.update(values=[top_wrong_skus],     range_name=f"{wf_letter}1", value_input_option="USER_ENTERED")
-        ws_cd.update(values=wrong_sku_pivot_data, range_name=f"{wf_letter}2", value_input_option="USER_ENTERED")
+        cd_batch.append({"range": f"{wf_letter}1", "values": [top_wrong_skus]})
+        cd_batch.append({"range": f"{wf_letter}2", "values": wrong_sku_pivot_data})
 
     # ── Loss summary pivot ────────────────────────────────────────────────────
     col_actions   = header.index("Actions Taken")       if "Actions Taken"       in header else None
@@ -673,9 +676,12 @@ def build_summary_data(sh):
 
     loss_col = wrong_sku_col + TOP_DAMAGE_SKUS + 2
     ll_letter = _col_letter(loss_col)
-    ws_cd.update(values=[LOSS_LABELS],    range_name=f"{ll_letter}1", value_input_option="USER_ENTERED")
+    cd_batch.append({"range": f"{ll_letter}1", "values": [LOSS_LABELS]})
     if loss_pivot_data:
-        ws_cd.update(values=loss_pivot_data, range_name=f"{ll_letter}2", value_input_option="USER_ENTERED")
+        cd_batch.append({"range": f"{ll_letter}2", "values": loss_pivot_data})
+
+    # Execute all _ChartData writes as a single API call
+    _with_retry(ws_cd.batch_update, cd_batch, value_input_option="USER_ENTERED")
 
     total_loss = sum(loss_replacement.values()) + sum(loss_refund.values()) + sum(loss_combined_full.values()) + sum(loss_combined_part.values())
     total_notes = sum(sum(d.values()) for d in damage_reason_by_month.values())
@@ -1348,7 +1354,7 @@ def write_sku_report_tab(sh, sorted_months,
                    for m_idx in range(len(sorted_months))]
         rows.append([sku, "Wrong Item"] + monthly + [sum(monthly)])
 
-    ws.update(values=rows, range_name="A1", value_input_option="USER_ENTERED")
+    _with_retry(ws.update, values=rows, range_name="A1", value_input_option="USER_ENTERED")
     print(f"  SKU Report tab written ({len(top_skus)} volume + {len(top_damaged_skus)} damaged + {len(top_missing_skus)} missing + {len(top_used_skus)} used + {len(top_wrong_skus)} wrong SKUs).")
 
 
@@ -1423,7 +1429,7 @@ def create_readme_tab(service, sh):
     ]
 
     # Write values
-    ws.batch_update([
+    _with_retry(ws.batch_update, [
         {"range": f"A{i+1}:B{i+1}", "values": [[r[0], r[1]]]}
         for i, r in enumerate(ROWS)
     ], value_input_option="USER_ENTERED")
