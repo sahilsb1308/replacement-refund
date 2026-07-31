@@ -15,6 +15,7 @@ Flow each run:
 import sys
 import os
 import re
+import time
 import calendar
 import requests
 import gspread
@@ -22,6 +23,38 @@ from google.oauth2.service_account import Credentials
 from googleapiclient.discovery import build
 from datetime import datetime, timezone, timedelta
 from collections import defaultdict
+
+
+def _with_retry(fn, *args, max_retries=5, **kwargs):
+    """Call fn(*args, **kwargs) with exponential backoff on 429 / transient errors."""
+    delay = 60
+    for attempt in range(max_retries):
+        try:
+            return fn(*args, **kwargs)
+        except Exception as e:
+            err = str(e)
+            if attempt == max_retries - 1:
+                raise
+            if "429" in err or "quota" in err.lower() or "rate" in err.lower():
+                print(f"  Rate limit hit — waiting {delay}s before retry {attempt + 2}/{max_retries}...")
+                time.sleep(delay)
+                delay = min(delay * 2, 300)
+            elif "500" in err or "503" in err or "502" in err:
+                wait = 15 * (attempt + 1)
+                print(f"  Transient error — waiting {wait}s before retry {attempt + 2}/{max_retries}...")
+                time.sleep(wait)
+            else:
+                raise
+
+
+def _sheets_batch(service, requests_list):
+    """Execute a Sheets API batchUpdate with retry on rate limits."""
+    return _with_retry(
+        service.spreadsheets().batchUpdate(
+            spreadsheetId=SHEET_ID,
+            body={"requests": requests_list},
+        ).execute
+    )
 
 # ── Config ────────────────────────────────────────────────────────────────────
 SHOPIFY_STORE   = "swiss-beauty-dev.myshopify.com"
@@ -696,7 +729,7 @@ def create_dashboard_charts(service, sh, ws_cd_id, mom_rows, n_sku_series,
     NUM_COLS = 16  # merge width (A:P)
 
     # Write title + section label text
-    ws_dash.batch_update([
+    _with_retry(ws_dash.batch_update, [
         {"range": "A1",   "values": [["Swiss Beauty — Returns & Refund Tracker"]]},
         {"range": "A22",  "values": [["TOP 15 SKUs BY VOLUME"]]},
         {"range": "A49",  "values": [["DAMAGE & MISSING ANALYSIS"]]},
@@ -739,26 +772,20 @@ def create_dashboard_charts(service, sh, ws_cd_id, mom_rows, n_sku_series,
     for row_idx, label in zip(SECTION_ROWS, SECTION_LABELS):
         layout_requests += _header_requests(row_idx, SLATE, 11, 30)
 
-    service.spreadsheets().batchUpdate(
-        spreadsheetId=SHEET_ID,
-        body={"requests": layout_requests},
-    ).execute()
+    _sheets_batch(service, layout_requests)
 
     # Delete existing charts on Dashboard so we always recreate with fresh ranges
-    spreadsheet = service.spreadsheets().get(spreadsheetId=SHEET_ID).execute()
+    spreadsheet = _with_retry(service.spreadsheets().get(spreadsheetId=SHEET_ID).execute)
     existing_charts = [
         c for sheet in spreadsheet.get("sheets", [])
         for c in sheet.get("charts", [])
         if sheet["properties"]["sheetId"] == dash_id
     ]
     if existing_charts:
-        service.spreadsheets().batchUpdate(
-            spreadsheetId=SHEET_ID,
-            body={"requests": [
-                {"deleteEmbeddedObject": {"objectId": c["chartId"]}}
-                for c in existing_charts
-            ]},
-        ).execute()
+        _sheets_batch(service, [
+            {"deleteEmbeddedObject": {"objectId": c["chartId"]}}
+            for c in existing_charts
+        ])
         print(f"  Deleted {len(existing_charts)} existing chart(s) — rebuilding.")
 
     n_months = len(mom_rows)
@@ -1073,10 +1100,7 @@ def create_dashboard_charts(service, sh, ws_cd_id, mom_rows, n_sku_series,
         }},
     }}})
 
-    service.spreadsheets().batchUpdate(
-        spreadsheetId=SHEET_ID,
-        body={"requests": requests_list},
-    ).execute()
+    _sheets_batch(service, requests_list)
     n_charts = 4 + (1 if n_damaged_skus > 0 else 0) + (1 if n_missing_skus > 0 else 0) + (1 if n_used_skus > 0 else 0) + (1 if n_wrong_skus > 0 else 0) + 1
     print(f"  Dashboard charts created ({n_charts} total: MoM + donut + SKU + reason + damaged + missing + used + wrong + loss).")
 
@@ -1146,10 +1170,7 @@ def create_month_slicer(service, sh, ws_cd_id, n_months):
         }
     }})
 
-    service.spreadsheets().batchUpdate(
-        spreadsheetId=SHEET_ID,
-        body={"requests": requests},
-    ).execute()
+    _sheets_batch(service, requests)
     print(f"  Month slicer on _ChartData (deleted {deleted} old slicer(s)).")
 
 
@@ -1250,19 +1271,13 @@ def polish_sheet(service, sh):
 
     # Execute — ignore "already exists" errors for banding
     try:
-        service.spreadsheets().batchUpdate(
-            spreadsheetId=SHEET_ID,
-            body={"requests": requests_list},
-        ).execute()
+        _sheets_batch(service, requests_list)
         print("  Tabs reordered, headers frozen, columns resized, banding applied.")
     except Exception as e:
         # On any banding conflict, retry without addBanding requests
         if "banding" in str(e).lower() or "alternating" in str(e).lower():
             clean_requests = [r for r in requests_list if "addBanding" not in r]
-            service.spreadsheets().batchUpdate(
-                spreadsheetId=SHEET_ID,
-                body={"requests": clean_requests},
-            ).execute()
+            _sheets_batch(service, clean_requests)
             print("  Tabs reordered, headers frozen, columns resized (banding already applied).")
         else:
             print(f"  Polish warning: {e}")
@@ -1492,10 +1507,7 @@ def create_readme_tab(service, sh):
         }},
     ]
 
-    service.spreadsheets().batchUpdate(
-        spreadsheetId=SHEET_ID,
-        body={"requests": reqs},
-    ).execute()
+    _sheets_batch(service, reqs)
     print("  README tab created/refreshed.")
 
 
@@ -1545,6 +1557,9 @@ def main():
     print("\nRebuilding 'All Data' tab...")
     rebuild_all_data(sh)
 
+    print("  Pausing 15s to avoid rate limits...")
+    time.sleep(15)
+
     # ── 5. Rebuild _ChartData + create Dashboard charts ───────────────────────
     print("\nUpdating chart data...")
     (ws_cd, mom_rows, n_sku_series, damage_reason_col,
@@ -1567,6 +1582,10 @@ def main():
                                  used_sku_col,    n_used_skus,
                                  wrong_sku_col,   n_wrong_skus,
                                  loss_col)
+
+        print("  Pausing 15s to avoid rate limits...")
+        time.sleep(15)
+
         create_month_slicer(service, sh, ws_cd.id, len(mom_rows))
         write_sku_report_tab(sh, sorted_months,
                              top_skus, sku_pivot_data,
@@ -1574,6 +1593,9 @@ def main():
                              top_missing_skus, missing_sku_pivot_data,
                              top_used_skus,   used_sku_pivot_data,
                              top_wrong_skus,  wrong_sku_pivot_data)
+
+    print("  Pausing 15s to avoid rate limits...")
+    time.sleep(15)
 
     # ── 6. README tab ─────────────────────────────────────────────────────────
     create_readme_tab(service, sh)
