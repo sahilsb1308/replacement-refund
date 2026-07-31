@@ -27,7 +27,7 @@ jobs:
           python-version: "3.11"
 
       - name: Install dependencies
-        run: pip install requests gspread google-auth
+        run: pip install -r requirements.txt
 
       - name: Skip if not last day of month (schedule only)
         if: github.event_name == 'schedule'
