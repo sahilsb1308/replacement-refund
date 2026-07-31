@@ -448,6 +448,8 @@ def build_summary_data(sh):
     damage_reason_by_month:  dict = defaultdict(lambda: defaultdict(int))
     damaged_sku_by_month:    dict = defaultdict(lambda: defaultdict(int))
     missing_sku_by_month:    dict = defaultdict(lambda: defaultdict(int))
+    used_sku_by_month:       dict = defaultdict(lambda: defaultdict(int))
+    wrong_sku_by_month:      dict = defaultdict(lambda: defaultdict(int))
 
     if col_notes is not None:
         for row in records[1:]:
@@ -464,6 +466,10 @@ def build_summary_data(sh):
                         damaged_sku_by_month[m][sku] += 1
                     elif reason == 'Missing':
                         missing_sku_by_month[m][sku] += 1
+                    elif reason == 'Used':
+                        used_sku_by_month[m][sku] += 1
+                    elif reason == 'Wrong Item':
+                        wrong_sku_by_month[m][sku] += 1
 
     reason_pivot_data = [
         [damage_reason_by_month[m].get(r, 0) for r in REASON_LABELS]
@@ -479,6 +485,8 @@ def build_summary_data(sh):
 
     top_damaged_skus = _top_skus_for(damaged_sku_by_month)
     top_missing_skus = _top_skus_for(missing_sku_by_month)
+    top_used_skus    = _top_skus_for(used_sku_by_month)
+    top_wrong_skus   = _top_skus_for(wrong_sku_by_month)
 
     damaged_sku_pivot_data = [
         [damaged_sku_by_month[m].get(sku, 0) for sku in top_damaged_skus]
@@ -488,21 +496,34 @@ def build_summary_data(sh):
         [missing_sku_by_month[m].get(sku, 0) for sku in top_missing_skus]
         for m in sorted_months
     ]
+    used_sku_pivot_data = [
+        [used_sku_by_month[m].get(sku, 0) for sku in top_used_skus]
+        for m in sorted_months
+    ]
+    wrong_sku_pivot_data = [
+        [wrong_sku_by_month[m].get(sku, 0) for sku in top_wrong_skus]
+        for m in sorted_months
+    ]
 
     # Column layout (0-indexed):
     #   M(12)..AB(27)  = top-15 SKU pivot
-    #   AD(29)..AH(33) = damage reason pivot   (gap of 1 col)
-    #   AJ(35)..AS(44) = damaged SKU pivot     (gap of 1 col)
-    #   AU(46)..BD(55) = missing SKU pivot     (gap of 1 col)
+    #   AD(29)..AH(33) = damage reason pivot
+    #   AJ(35)..AS(44) = damaged SKU pivot
+    #   AU(46)..BD(55) = missing SKU pivot
+    #   BF(57)..BO(66) = used SKU pivot
+    #   BQ(68)..BZ(77) = wrong item SKU pivot
     damage_reason_col = SKU_COL_START + len(top_skus) + 2
     damaged_sku_col   = damage_reason_col + len(REASON_LABELS) + 2
     missing_sku_col   = damaged_sku_col   + TOP_DAMAGE_SKUS    + 2
+    used_sku_col      = missing_sku_col   + TOP_DAMAGE_SKUS    + 2
+    wrong_sku_col     = used_sku_col      + TOP_DAMAGE_SKUS    + 2
+    print(f"  Column layout — used:{used_sku_col} ({len(top_used_skus)} SKUs)  wrong:{wrong_sku_col} ({len(top_wrong_skus)} SKUs)  loss will be at: {wrong_sku_col + TOP_DAMAGE_SKUS + 2}")
 
     # ── Write _ChartData ──────────────────────────────────────────────────────
-    ws_cd = get_or_create_tab(sh, "_ChartData", rows=max(n + 10, 20), cols=70)
+    # loss_col can reach ~84, so ensure at least 100 cols BEFORE clear/write
+    ws_cd = get_or_create_tab(sh, "_ChartData", rows=max(n + 10, 20), cols=100)
+    ws_cd.resize(rows=max(n + 10, 20), cols=100)   # force-expand regardless of cached count
     ws_cd.clear()
-    if ws_cd.col_count < 70:
-        ws_cd.resize(rows=max(n + 10, 20), cols=70)
 
     # A) MoM cols A–G, rows 1..n+1
     ws_cd.update(values=[mom_header] + mom_rows, range_name="A1", value_input_option="USER_ENTERED")
@@ -535,6 +556,18 @@ def build_summary_data(sh):
         mf_letter = _col_letter(missing_sku_col)
         ws_cd.update(values=[top_missing_skus],     range_name=f"{mf_letter}1", value_input_option="USER_ENTERED")
         ws_cd.update(values=missing_sku_pivot_data, range_name=f"{mf_letter}2", value_input_option="USER_ENTERED")
+
+    # G) Used SKU pivot
+    if top_used_skus:
+        uf_letter = _col_letter(used_sku_col)
+        ws_cd.update(values=[top_used_skus],     range_name=f"{uf_letter}1", value_input_option="USER_ENTERED")
+        ws_cd.update(values=used_sku_pivot_data, range_name=f"{uf_letter}2", value_input_option="USER_ENTERED")
+
+    # H) Wrong Item SKU pivot
+    if top_wrong_skus:
+        wf_letter = _col_letter(wrong_sku_col)
+        ws_cd.update(values=[top_wrong_skus],     range_name=f"{wf_letter}1", value_input_option="USER_ENTERED")
+        ws_cd.update(values=wrong_sku_pivot_data, range_name=f"{wf_letter}2", value_input_option="USER_ENTERED")
 
     # ── Loss summary pivot ────────────────────────────────────────────────────
     col_actions   = header.index("Actions Taken")       if "Actions Taken"       in header else None
@@ -605,7 +638,7 @@ def build_summary_data(sh):
         for m in sorted_months
     ]
 
-    loss_col = missing_sku_col + TOP_DAMAGE_SKUS + 2
+    loss_col = wrong_sku_col + TOP_DAMAGE_SKUS + 2
     ll_letter = _col_letter(loss_col)
     ws_cd.update(values=[LOSS_LABELS],    range_name=f"{ll_letter}1", value_input_option="USER_ENTERED")
     if loss_pivot_data:
@@ -617,17 +650,23 @@ def build_summary_data(sh):
     return (ws_cd, mom_rows, len(top_skus), damage_reason_col,
             damaged_sku_col, len(top_damaged_skus),
             missing_sku_col, len(top_missing_skus),
+            used_sku_col,    len(top_used_skus),
+            wrong_sku_col,   len(top_wrong_skus),
             loss_col,
             sorted_months,
             top_skus, sku_pivot_data,
             top_damaged_skus, damaged_sku_pivot_data,
-            top_missing_skus, missing_sku_pivot_data)
+            top_missing_skus, missing_sku_pivot_data,
+            top_used_skus,   used_sku_pivot_data,
+            top_wrong_skus,  wrong_sku_pivot_data)
 
 
 def create_dashboard_charts(service, sh, ws_cd_id, mom_rows, n_sku_series,
                              damage_reason_col,
                              damaged_sku_col, n_damaged_skus,
                              missing_sku_col,  n_missing_skus,
+                             used_sku_col,    n_used_skus,
+                             wrong_sku_col,   n_wrong_skus,
                              loss_col):
     """
     Create charts on the Dashboard tab using the Sheets API.
@@ -642,27 +681,27 @@ def create_dashboard_charts(service, sh, ws_cd_id, mom_rows, n_sku_series,
     dash_id = ws_dash.id
 
     # Ensure Dashboard has enough rows for all charts
-    if ws_dash.row_count < 120:
-        ws_dash.resize(rows=120)
+    if ws_dash.row_count < 145:
+        ws_dash.resize(rows=145)
 
     # ── Dashboard layout: title + section headers ─────────────────────────────
     TITLE_ROW       = 0   # rowIndex (0-based) → Sheets row 1
-    SECTION_ROWS    = [21, 48, 69, 90]  # gap rows between chart groups
+    SECTION_ROWS    = [21, 48, 69, 111]  # gap rows between chart groups
     SECTION_LABELS  = [
         "TOP 15 SKUs BY VOLUME",
         "DAMAGE & MISSING ANALYSIS",
-        "SKU BREAKDOWN — DAMAGED vs MISSING",
+        "SKU BREAKDOWN — DAMAGED / MISSING / USED / WRONG ITEM",
         "LOSS ANALYSIS",
     ]
     NUM_COLS = 16  # merge width (A:P)
 
     # Write title + section label text
     ws_dash.batch_update([
-        {"range": "A1",  "values": [["Swiss Beauty — Returns & Refund Tracker"]]},
-        {"range": "A22", "values": [["TOP 15 SKUs BY VOLUME"]]},
-        {"range": "A49", "values": [["DAMAGE & MISSING ANALYSIS"]]},
-        {"range": "A70", "values": [["SKU BREAKDOWN — DAMAGED vs MISSING"]]},
-        {"range": "A91", "values": [["LOSS ANALYSIS"]]},
+        {"range": "A1",   "values": [["Swiss Beauty — Returns & Refund Tracker"]]},
+        {"range": "A22",  "values": [["TOP 15 SKUs BY VOLUME"]]},
+        {"range": "A49",  "values": [["DAMAGE & MISSING ANALYSIS"]]},
+        {"range": "A70",  "values": [["SKU BREAKDOWN — DAMAGED / MISSING / USED / WRONG ITEM"]]},
+        {"range": "A112", "values": [["LOSS ANALYSIS"]]},
     ], value_input_option="USER_ENTERED")
 
     # Build format/merge requests for title and section headers
@@ -931,7 +970,69 @@ def create_dashboard_charts(service, sh, ws_cd_id, mom_rows, n_sku_series,
             }},
         }}})
 
-    # ── Chart 7: Monthly Loss Breakdown (₹) — stacked column ─────────────────
+    # ── Chart 7: Top Used SKUs — stacked bar ─────────────────────────────────
+    if n_used_skus > 0:
+        used_end = n_months + 1
+        requests_list.append({"addChart": {"chart": {
+            "spec": {
+                "title": f"Top {n_used_skus} SKUs — Used Product Issues by Month",
+                "basicChart": {
+                    "chartType": "BAR",
+                    "stackedType": "STACKED",
+                    "legendPosition": "RIGHT_LEGEND",
+                    "domains": [{"domain": {"sourceRange": {"sources": [
+                        col_range(cd_id, 0, used_end, 0)
+                    ]}}}],
+                    "series": [
+                        {
+                            "series": {"sourceRange": {"sources": [
+                                col_range(cd_id, 0, used_end, used_sku_col + i)
+                            ]}},
+                            "targetAxis": "BOTTOM_AXIS",
+                        }
+                        for i in range(n_used_skus)
+                    ],
+                    "headerCount": 1,
+                },
+            },
+            "position": {"overlayPosition": {
+                "anchorCell": {"sheetId": dash_id, "rowIndex": 91, "columnIndex": 0},
+                "widthPixels": 630, "heightPixels": 400,
+            }},
+        }}})
+
+    # ── Chart 8: Top Wrong Item SKUs — stacked bar ────────────────────────────
+    if n_wrong_skus > 0:
+        wrong_end = n_months + 1
+        requests_list.append({"addChart": {"chart": {
+            "spec": {
+                "title": f"Top {n_wrong_skus} SKUs — Wrong Item Issues by Month",
+                "basicChart": {
+                    "chartType": "BAR",
+                    "stackedType": "STACKED",
+                    "legendPosition": "RIGHT_LEGEND",
+                    "domains": [{"domain": {"sourceRange": {"sources": [
+                        col_range(cd_id, 0, wrong_end, 0)
+                    ]}}}],
+                    "series": [
+                        {
+                            "series": {"sourceRange": {"sources": [
+                                col_range(cd_id, 0, wrong_end, wrong_sku_col + i)
+                            ]}},
+                            "targetAxis": "BOTTOM_AXIS",
+                        }
+                        for i in range(n_wrong_skus)
+                    ],
+                    "headerCount": 1,
+                },
+            },
+            "position": {"overlayPosition": {
+                "anchorCell": {"sheetId": dash_id, "rowIndex": 91, "columnIndex": 4},
+                "widthPixels": 630, "heightPixels": 400,
+            }},
+        }}})
+
+    # ── Chart 9: Monthly Loss Breakdown (₹) — stacked column ─────────────────
     LOSS_COLORS = [
         {"red": 0.83, "green": 0.18, "blue": 0.18},  # red    – Replacement
         {"red": 0.23, "green": 0.47, "blue": 0.85},  # blue   – Refund
@@ -967,7 +1068,7 @@ def create_dashboard_charts(service, sh, ws_cd_id, mom_rows, n_sku_series,
             },
         },
         "position": {"overlayPosition": {
-            "anchorCell": {"sheetId": dash_id, "rowIndex": 92, "columnIndex": 0},
+            "anchorCell": {"sheetId": dash_id, "rowIndex": 113, "columnIndex": 0},
             "widthPixels": 980, "heightPixels": 440,
         }},
     }}})
@@ -976,8 +1077,8 @@ def create_dashboard_charts(service, sh, ws_cd_id, mom_rows, n_sku_series,
         spreadsheetId=SHEET_ID,
         body={"requests": requests_list},
     ).execute()
-    n_charts = 4 + (1 if n_damaged_skus > 0 else 0) + (1 if n_missing_skus > 0 else 0) + 1
-    print(f"  Dashboard charts created ({n_charts} total: MoM + donut + SKU + reason + damaged SKU + missing SKU + loss).")
+    n_charts = 4 + (1 if n_damaged_skus > 0 else 0) + (1 if n_missing_skus > 0 else 0) + (1 if n_used_skus > 0 else 0) + (1 if n_wrong_skus > 0 else 0) + 1
+    print(f"  Dashboard charts created ({n_charts} total: MoM + donut + SKU + reason + damaged + missing + used + wrong + loss).")
 
 
 # ── Dashboard slicer ─────────────────────────────────────────────────────────
@@ -1172,7 +1273,9 @@ def polish_sheet(service, sh):
 def write_sku_report_tab(sh, sorted_months,
                          top_skus, sku_pivot,
                          top_damaged_skus, damaged_pivot,
-                         top_missing_skus, missing_pivot):
+                         top_missing_skus, missing_pivot,
+                         top_used_skus,   used_pivot,
+                         top_wrong_skus,  wrong_pivot):
     """
     Write a flat 'SKU Report' tab readable by n8n.
     Three sections separated by blank rows:
@@ -1214,8 +1317,24 @@ def write_sku_report_tab(sh, sorted_months,
                    for m_idx in range(len(sorted_months))]
         rows.append([sku, "Missing"] + monthly + [sum(monthly)])
 
+    # Section 4: Used SKUs
+    rows.append(["", "", *[""] * len(sorted_months), ""])
+    rows.append(["--- TOP USED PRODUCT SKUs ---", "", *[""] * len(sorted_months), ""])
+    for i, sku in enumerate(top_used_skus):
+        monthly = [used_pivot[m_idx][i] if m_idx < len(used_pivot) else 0
+                   for m_idx in range(len(sorted_months))]
+        rows.append([sku, "Used"] + monthly + [sum(monthly)])
+
+    # Section 5: Wrong Item SKUs
+    rows.append(["", "", *[""] * len(sorted_months), ""])
+    rows.append(["--- TOP WRONG ITEM SKUs ---", "", *[""] * len(sorted_months), ""])
+    for i, sku in enumerate(top_wrong_skus):
+        monthly = [wrong_pivot[m_idx][i] if m_idx < len(wrong_pivot) else 0
+                   for m_idx in range(len(sorted_months))]
+        rows.append([sku, "Wrong Item"] + monthly + [sum(monthly)])
+
     ws.update(values=rows, range_name="A1", value_input_option="USER_ENTERED")
-    print(f"  SKU Report tab written ({len(top_skus)} volume + {len(top_damaged_skus)} damaged + {len(top_missing_skus)} missing SKUs).")
+    print(f"  SKU Report tab written ({len(top_skus)} volume + {len(top_damaged_skus)} damaged + {len(top_missing_skus)} missing + {len(top_used_skus)} used + {len(top_wrong_skus)} wrong SKUs).")
 
 
 # ── README tab ────────────────────────────────────────────────────────────────
@@ -1429,23 +1548,32 @@ def main():
     # ── 5. Rebuild _ChartData + create Dashboard charts ───────────────────────
     print("\nUpdating chart data...")
     (ws_cd, mom_rows, n_sku_series, damage_reason_col,
-     damaged_sku_col, n_damaged_skus, missing_sku_col, n_missing_skus,
+     damaged_sku_col, n_damaged_skus,
+     missing_sku_col, n_missing_skus,
+     used_sku_col,    n_used_skus,
+     wrong_sku_col,   n_wrong_skus,
      loss_col,
      sorted_months,
-     top_skus, sku_pivot_data,
+     top_skus,        sku_pivot_data,
      top_damaged_skus, damaged_sku_pivot_data,
-     top_missing_skus, missing_sku_pivot_data) = build_summary_data(sh)
+     top_missing_skus, missing_sku_pivot_data,
+     top_used_skus,   used_sku_pivot_data,
+     top_wrong_skus,  wrong_sku_pivot_data) = build_summary_data(sh)
     if ws_cd and mom_rows:
         create_dashboard_charts(service, sh, ws_cd.id, mom_rows, n_sku_series,
                                  damage_reason_col,
                                  damaged_sku_col, n_damaged_skus,
                                  missing_sku_col,  n_missing_skus,
+                                 used_sku_col,    n_used_skus,
+                                 wrong_sku_col,   n_wrong_skus,
                                  loss_col)
         create_month_slicer(service, sh, ws_cd.id, len(mom_rows))
         write_sku_report_tab(sh, sorted_months,
                              top_skus, sku_pivot_data,
                              top_damaged_skus, damaged_sku_pivot_data,
-                             top_missing_skus, missing_sku_pivot_data)
+                             top_missing_skus, missing_sku_pivot_data,
+                             top_used_skus,   used_sku_pivot_data,
+                             top_wrong_skus,  wrong_sku_pivot_data)
 
     # ── 6. README tab ─────────────────────────────────────────────────────────
     create_readme_tab(service, sh)
