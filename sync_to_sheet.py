@@ -662,6 +662,7 @@ def build_summary_data(sh):
     LOSS_LABELS = [
         "Replacement Loss (₹)", "Refund Loss (₹)",
         "Full Replacement + Refund Given (₹)", "Partial Replacement + Refund Given (₹)",
+        "Total Loss (₹)",
         "Null MRP Orders",
     ]
     loss_pivot_data = [
@@ -670,6 +671,7 @@ def build_summary_data(sh):
             round(loss_refund[m],        2),
             round(loss_combined_full[m], 2),
             round(loss_combined_part[m], 2),
+            round(loss_replacement[m] + loss_refund[m] + loss_combined_full[m] + loss_combined_part[m], 2),
             loss_null_count[m],
         ]
         for m in sorted_months
