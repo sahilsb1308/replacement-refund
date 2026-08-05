@@ -60,7 +60,8 @@ def _sheets_batch(service, requests_list):
 SHOPIFY_STORE   = "swiss-beauty-dev.myshopify.com"
 SHOPIFY_TOKEN   = os.environ.get("SHOPIFY_TOKEN", "")
 SHOPIFY_API_VER = "2024-01"
-SHEET_ID        = "1VptcDahrMKwqgo3wWmxpoVzXEyY5je2U73mvx4rOYnU"
+SHEET_ID           = "1VptcDahrMKwqgo3wWmxpoVzXEyY5je2U73mvx4rOYnU"
+PRODUCT_MASTER_ID  = "10NEmeWHhit99ToTr-kTvEHyaC2fgOYd1v6quVKrZEZk"
 CREDS_FILE      = (
     os.environ.get("GOOGLE_CREDS_FILE")
     or r"C:\Users\Sahil Gaur\Downloads\replacement-and-refund-8a7f8939a062.json"
@@ -1308,58 +1309,80 @@ def write_sku_report_tab(sh, sorted_months,
         ws = sh.worksheet(TAB_NAME)
         ws.clear()
     except gspread.exceptions.WorksheetNotFound:
-        ws = sh.add_worksheet(title=TAB_NAME, rows=120, cols=20)
+        ws = sh.add_worksheet(title=TAB_NAME, rows=120, cols=25)
 
-    header = ["SKU", "Category"] + sorted_months + ["Total"]
+    # Load product master for title/variant lookup
+    sku_info: dict = {}
+    try:
+        master_sh = sh.client.open_by_key(PRODUCT_MASTER_ID)
+        master_ws = master_sh.worksheet("Main")
+        for r in master_ws.get_all_records():
+            sku = str(r.get("Shopify SKU", "")).strip()
+            if sku:
+                sku_info[sku] = {
+                    "title":   str(r.get("Product Title", "")).strip(),
+                    "variant": str(r.get("Product Variant Title", "")).strip(),
+                }
+        print(f"  Product master loaded — {len(sku_info)} SKUs.")
+    except Exception as e:
+        print(f"  Warning: could not load product master: {e}")
+
+    def _row(sku, category, monthly):
+        info = sku_info.get(sku, {})
+        return [sku, info.get("title", ""), info.get("variant", ""), category] + monthly + [sum(monthly)]
+
+    blank = ["", "", "", "", *[""] * len(sorted_months), ""]
+
+    header = ["SKU", "Product Title", "Product Variant Title", "Category"] + sorted_months + ["Total"]
     rows   = [header]
 
     # Section 1: Top 15 SKUs by volume
-    rows.append(["--- TOP 15 SKUs BY ISSUE VOLUME ---", "", *[""] * len(sorted_months), ""])
+    rows.append(["--- TOP 15 SKUs BY ISSUE VOLUME ---", "", "", "", *[""] * len(sorted_months), ""])
     for i, sku in enumerate(top_skus):
         monthly = [sku_pivot[m_idx][i] if m_idx < len(sku_pivot) else 0
                    for m_idx in range(len(sorted_months))]
-        rows.append([sku, "Issue Volume"] + monthly + [sum(monthly)])
+        rows.append(_row(sku, "Issue Volume", monthly))
 
     # Section 2: Damaged SKUs
-    rows.append(["", "", *[""] * len(sorted_months), ""])
-    rows.append(["--- TOP DAMAGED SKUs ---", "", *[""] * len(sorted_months), ""])
+    rows.append(blank)
+    rows.append(["--- TOP DAMAGED SKUs ---", "", "", "", *[""] * len(sorted_months), ""])
     for i, sku in enumerate(top_damaged_skus):
         monthly = [damaged_pivot[m_idx][i] if m_idx < len(damaged_pivot) else 0
                    for m_idx in range(len(sorted_months))]
-        rows.append([sku, "Damaged"] + monthly + [sum(monthly)])
+        rows.append(_row(sku, "Damaged", monthly))
 
     # Section 3: Missing SKUs
-    rows.append(["", "", *[""] * len(sorted_months), ""])
-    rows.append(["--- TOP MISSING SKUs ---", "", *[""] * len(sorted_months), ""])
+    rows.append(blank)
+    rows.append(["--- TOP MISSING SKUs ---", "", "", "", *[""] * len(sorted_months), ""])
     for i, sku in enumerate(top_missing_skus):
         monthly = [missing_pivot[m_idx][i] if m_idx < len(missing_pivot) else 0
                    for m_idx in range(len(sorted_months))]
-        rows.append([sku, "Missing"] + monthly + [sum(monthly)])
+        rows.append(_row(sku, "Missing", monthly))
 
     # Section 4: Used SKUs
-    rows.append(["", "", *[""] * len(sorted_months), ""])
-    rows.append(["--- TOP USED PRODUCT SKUs ---", "", *[""] * len(sorted_months), ""])
+    rows.append(blank)
+    rows.append(["--- TOP USED PRODUCT SKUs ---", "", "", "", *[""] * len(sorted_months), ""])
     for i, sku in enumerate(top_used_skus):
         monthly = [used_pivot[m_idx][i] if m_idx < len(used_pivot) else 0
                    for m_idx in range(len(sorted_months))]
-        rows.append([sku, "Used"] + monthly + [sum(monthly)])
+        rows.append(_row(sku, "Used", monthly))
 
     # Section 5: Wrong Item SKUs
-    rows.append(["", "", *[""] * len(sorted_months), ""])
-    rows.append(["--- TOP WRONG ITEM SKUs ---", "", *[""] * len(sorted_months), ""])
+    rows.append(blank)
+    rows.append(["--- TOP WRONG ITEM SKUs ---", "", "", "", *[""] * len(sorted_months), ""])
     for i, sku in enumerate(top_wrong_skus):
         monthly = [wrong_pivot[m_idx][i] if m_idx < len(wrong_pivot) else 0
                    for m_idx in range(len(sorted_months))]
-        rows.append([sku, "Wrong Item"] + monthly + [sum(monthly)])
+        rows.append(_row(sku, "Wrong Item", monthly))
 
     # Section 6: Revenue Loss breakdown
     if loss_labels and loss_pivot:
-        rows.append(["", "", *[""] * len(sorted_months), ""])
-        rows.append(["--- REVENUE LOSS BREAKDOWN ---", "", *[""] * len(sorted_months), ""])
+        rows.append(blank)
+        rows.append(["--- REVENUE LOSS BREAKDOWN ---", "", "", "", *[""] * len(sorted_months), ""])
         for i, label in enumerate(loss_labels):
             monthly = [loss_pivot[m_idx][i] if m_idx < len(loss_pivot) else 0
                        for m_idx in range(len(sorted_months))]
-            rows.append([label, "Revenue Loss"] + monthly + [sum(monthly)])
+            rows.append([label, "", "", "Revenue Loss"] + monthly + [sum(monthly)])
 
     _with_retry(ws.update, values=rows, range_name="A1", value_input_option="USER_ENTERED")
     print(f"  SKU Report tab written ({len(top_skus)} volume + {len(top_damaged_skus)} damaged + {len(top_missing_skus)} missing + {len(top_used_skus)} used + {len(top_wrong_skus)} wrong SKUs + {len(loss_labels or [])} loss rows).")
