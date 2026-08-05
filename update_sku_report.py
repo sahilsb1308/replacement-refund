@@ -61,7 +61,7 @@ def main():
 
     print("Writing SKU Report tab...")
     write_sku_report_tab(
-        sh, sorted_months,
+        sh, gc, sorted_months,
         top_skus, sku_pivot_data,
         top_damaged_skus, damaged_sku_pivot_data,
         top_missing_skus, missing_sku_pivot_data,

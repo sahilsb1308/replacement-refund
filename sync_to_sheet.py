@@ -1293,7 +1293,7 @@ def polish_sheet(service, sh):
 
 # ── SKU Report tab (for n8n mailer) ──────────────────────────────────────────
 
-def write_sku_report_tab(sh, sorted_months,
+def write_sku_report_tab(sh, gc, sorted_months,
                          top_skus, sku_pivot,
                          top_damaged_skus, damaged_pivot,
                          top_missing_skus, missing_pivot,
@@ -1314,7 +1314,7 @@ def write_sku_report_tab(sh, sorted_months,
     # Load product master for title/variant lookup
     sku_info: dict = {}
     try:
-        master_sh = sh.client.open_by_key(PRODUCT_MASTER_ID)
+        master_sh = gc.open_by_key(PRODUCT_MASTER_ID)
         master_ws = master_sh.worksheet("Main")
         for r in master_ws.get_all_records():
             sku = str(r.get("Shopify SKU", "")).strip()
@@ -1624,7 +1624,7 @@ def main():
         time.sleep(15)
 
         create_month_slicer(service, sh, ws_cd.id, len(mom_rows))
-        write_sku_report_tab(sh, sorted_months,
+        write_sku_report_tab(sh, gc, sorted_months,
                              top_skus, sku_pivot_data,
                              top_damaged_skus, damaged_sku_pivot_data,
                              top_missing_skus, missing_sku_pivot_data,
