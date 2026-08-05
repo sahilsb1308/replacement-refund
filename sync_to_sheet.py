@@ -727,6 +727,9 @@ def create_dashboard_charts(service, sh, ws_cd_id, mom_rows, n_sku_series,
     if ws_dash.row_count < 145:
         ws_dash.resize(rows=145)
 
+    # Clear stale labels/values from previous runs before rewriting
+    _with_retry(ws_dash.clear)
+
     # ── Dashboard layout: title + section headers ─────────────────────────────
     TITLE_ROW       = 0   # rowIndex (0-based) → Sheets row 1
     SECTION_ROWS    = [21, 48, 69, 111]  # gap rows between chart groups
