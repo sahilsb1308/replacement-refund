@@ -44,7 +44,8 @@ def main():
      top_damaged_skus, damaged_sku_pivot_data,
      top_missing_skus, missing_sku_pivot_data,
      top_used_skus,   used_sku_pivot_data,
-     top_wrong_skus,  wrong_sku_pivot_data) = result
+     top_wrong_skus,  wrong_sku_pivot_data,
+     loss_labels,     loss_pivot_data) = result
 
     service = build("sheets", "v4", credentials=creds)
 
@@ -66,6 +67,7 @@ def main():
         top_missing_skus, missing_sku_pivot_data,
         top_used_skus,   used_sku_pivot_data,
         top_wrong_skus,  wrong_sku_pivot_data,
+        loss_labels,     loss_pivot_data,
     )
 
     print(f"\nDone! https://docs.google.com/spreadsheets/d/{SHEET_ID}/edit")

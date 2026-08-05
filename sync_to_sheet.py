@@ -697,7 +697,8 @@ def build_summary_data(sh):
             top_damaged_skus, damaged_sku_pivot_data,
             top_missing_skus, missing_sku_pivot_data,
             top_used_skus,   used_sku_pivot_data,
-            top_wrong_skus,  wrong_sku_pivot_data)
+            top_wrong_skus,  wrong_sku_pivot_data,
+            LOSS_LABELS, loss_pivot_data)
 
 
 def create_dashboard_charts(service, sh, ws_cd_id, mom_rows, n_sku_series,
@@ -1296,13 +1297,10 @@ def write_sku_report_tab(sh, sorted_months,
                          top_damaged_skus, damaged_pivot,
                          top_missing_skus, missing_pivot,
                          top_used_skus,   used_pivot,
-                         top_wrong_skus,  wrong_pivot):
+                         top_wrong_skus,  wrong_pivot,
+                         loss_labels=None, loss_pivot=None):
     """
     Write a flat 'SKU Report' tab readable by n8n.
-    Three sections separated by blank rows:
-      1. Top 15 SKUs by Issue Volume (order count)
-      2. Top Damaged SKUs (damage notes)
-      3. Top Missing SKUs (missing notes)
     Columns: SKU | Category | <Month 1> | ... | Total
     """
     TAB_NAME = "SKU Report"
@@ -1354,8 +1352,17 @@ def write_sku_report_tab(sh, sorted_months,
                    for m_idx in range(len(sorted_months))]
         rows.append([sku, "Wrong Item"] + monthly + [sum(monthly)])
 
+    # Section 6: Revenue Loss breakdown
+    if loss_labels and loss_pivot:
+        rows.append(["", "", *[""] * len(sorted_months), ""])
+        rows.append(["--- REVENUE LOSS BREAKDOWN ---", "", *[""] * len(sorted_months), ""])
+        for i, label in enumerate(loss_labels):
+            monthly = [loss_pivot[m_idx][i] if m_idx < len(loss_pivot) else 0
+                       for m_idx in range(len(sorted_months))]
+            rows.append([label, "Revenue Loss"] + monthly + [sum(monthly)])
+
     _with_retry(ws.update, values=rows, range_name="A1", value_input_option="USER_ENTERED")
-    print(f"  SKU Report tab written ({len(top_skus)} volume + {len(top_damaged_skus)} damaged + {len(top_missing_skus)} missing + {len(top_used_skus)} used + {len(top_wrong_skus)} wrong SKUs).")
+    print(f"  SKU Report tab written ({len(top_skus)} volume + {len(top_damaged_skus)} damaged + {len(top_missing_skus)} missing + {len(top_used_skus)} used + {len(top_wrong_skus)} wrong SKUs + {len(loss_labels or [])} loss rows).")
 
 
 # ── README tab ────────────────────────────────────────────────────────────────
@@ -1579,7 +1586,8 @@ def main():
      top_damaged_skus, damaged_sku_pivot_data,
      top_missing_skus, missing_sku_pivot_data,
      top_used_skus,   used_sku_pivot_data,
-     top_wrong_skus,  wrong_sku_pivot_data) = build_summary_data(sh)
+     top_wrong_skus,  wrong_sku_pivot_data,
+     loss_labels,     loss_pivot_data) = build_summary_data(sh)
     if ws_cd and mom_rows:
         create_dashboard_charts(service, sh, ws_cd.id, mom_rows, n_sku_series,
                                  damage_reason_col,
@@ -1598,7 +1606,8 @@ def main():
                              top_damaged_skus, damaged_sku_pivot_data,
                              top_missing_skus, missing_sku_pivot_data,
                              top_used_skus,   used_sku_pivot_data,
-                             top_wrong_skus,  wrong_sku_pivot_data)
+                             top_wrong_skus,  wrong_sku_pivot_data,
+                             loss_labels,     loss_pivot_data)
 
     print("  Pausing 15s to avoid rate limits...")
     time.sleep(15)
