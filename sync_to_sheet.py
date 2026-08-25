@@ -478,7 +478,8 @@ def build_summary_data(sh):
     ]
 
     # ── Damage / Missing pivot from order notes ───────────────────────────────
-    col_notes = header.index("Notes") if "Notes" in header else None
+    col_notes   = header.index("Notes")          if "Notes"          in header else None
+    col_act     = header.index("Actions Taken")  if "Actions Taken"  in header else None
     damage_reason_by_month:  dict = defaultdict(lambda: defaultdict(int))
     damaged_sku_by_month:    dict = defaultdict(lambda: defaultdict(int))
     missing_sku_by_month:    dict = defaultdict(lambda: defaultdict(int))
@@ -487,12 +488,13 @@ def build_summary_data(sh):
 
     null_reason_by_month: dict = defaultdict(int)
 
-    if col_notes is not None:
-        for row in records[1:]:
-            m    = row[col_mon]   if len(row) > col_mon   else ""
-            note = row[col_notes] if len(row) > col_notes else ""
-            if not m or not note.strip():
-                continue
+    for row in records[1:]:
+        m       = row[col_mon]  if len(row) > col_mon  else ""
+        note    = (row[col_notes] if col_notes and len(row) > col_notes else "") or ""
+        actions = (row[col_act]   if col_act   and len(row) > col_act   else "") or ""
+        if not m:
+            continue
+        if note.strip():
             reason = _parse_reason(note)
             if reason:
                 damage_reason_by_month[m][reason] += 1
@@ -508,6 +510,9 @@ def build_summary_data(sh):
                         wrong_sku_by_month[m][sku] += 1
             else:
                 null_reason_by_month[m] += 1
+        elif actions.strip():
+            # Actions Taken filled but no Notes — reason could not be determined
+            null_reason_by_month[m] += 1
 
     reason_pivot_data = [
         [damage_reason_by_month[m].get(r, 0) for r in REASON_LABELS]
