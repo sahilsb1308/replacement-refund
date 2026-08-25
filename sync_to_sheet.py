@@ -1351,7 +1351,7 @@ def write_sku_report_tab(sh, gc, sorted_months,
         for r in master_ws.get_all_records():
             sku = str(r.get("Shopify SKU", "")).strip()
             if sku:
-                sku_info[sku] = {
+                sku_info[sku.upper()] = {
                     "title":   str(r.get("Product Title", "")).strip(),
                     "variant": str(r.get("Product Variant Title", "")).strip(),
                 }
@@ -1360,7 +1360,7 @@ def write_sku_report_tab(sh, gc, sorted_months,
         print(f"  Warning: could not load product master: {e}")
 
     def _row(sku, category, monthly):
-        info = sku_info.get(sku, {})
+        info = sku_info.get(sku.upper(), {})
         return [sku, info.get("title", ""), info.get("variant", ""), category] + monthly + [sum(monthly)]
 
     blank = ["", "", "", "", *[""] * len(sorted_months), ""]
