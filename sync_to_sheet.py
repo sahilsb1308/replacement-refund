@@ -795,7 +795,15 @@ def create_dashboard_charts(service, sh, ws_cd_id, mom_rows, n_sku_series,
     for row_idx, label in zip(SECTION_ROWS, SECTION_LABELS):
         layout_requests += _header_requests(row_idx, SLATE, 11, 30)
 
-    _sheets_batch(service, layout_requests)
+    try:
+        _sheets_batch(service, layout_requests)
+    except Exception as e:
+        if "unmerge" in str(e).lower() or "merged range" in str(e).lower():
+            clean = [r for r in layout_requests if "unmergeCells" not in r]
+            _sheets_batch(service, clean)
+            print("  Layout applied (unmergeCells skipped — cells already merged).")
+        else:
+            raise
 
     # Delete existing charts on Dashboard so we always recreate with fresh ranges
     spreadsheet = _with_retry(service.spreadsheets().get(spreadsheetId=SHEET_ID).execute)
