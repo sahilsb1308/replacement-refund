@@ -80,7 +80,7 @@ TARGET_TAGS = {
 }
 
 MONTH_HEADERS = [
-    "Order Number", "Order Date (IST)", "Order Type", "Cancel Reason",
+    "Order Number", "Order Date (IST)", "Order Type - from tags", "Cancel Reason",
     "Financial Status", "Fulfillment Status",
     "Actions Taken", "Notes",
     "Customer Name", "Customer Phone", "City", "State",
@@ -408,7 +408,7 @@ def build_summary_data(sh):
     All data fits in rows 1..n (one row per month):
 
       Cols A–G  (rows 0..n): MoM table — Month | Refund | Returned | RTO | Undelivered | Replacement | Total
-      Cols J–K  (rows 0..5): Donut     — Order Type | =SUBTOTAL() recalcs on slicer filter
+      Cols J–K  (rows 0..5): Donut     — Order Type - from tags | =SUBTOTAL() recalcs on slicer filter
       Cols M+   (rows 0..n): SKU pivot — top-15 SKU codes as column headers, counts as data
       Cols AD+  (rows 0..n): Damage reason pivot — Damaged | Missing | Wrong Item | Used | Other
       Cols AK+  (rows 0..n): Damage SKU pivot — top-10 SKUs from damage/missing notes
@@ -420,7 +420,7 @@ def build_summary_data(sh):
 
     header   = records[0]
     col_mon  = header.index("Month")
-    col_type = header.index("Order Type")
+    col_type = header.index("Order Type - from tags")
     col_sku1 = header.index("SKU 1")
     col_sku2 = header.index("SKU 2")
     col_sku3 = header.index("SKU 3")
@@ -485,6 +485,8 @@ def build_summary_data(sh):
     used_sku_by_month:       dict = defaultdict(lambda: defaultdict(int))
     wrong_sku_by_month:      dict = defaultdict(lambda: defaultdict(int))
 
+    null_reason_by_month: dict = defaultdict(int)
+
     if col_notes is not None:
         for row in records[1:]:
             m    = row[col_mon]   if len(row) > col_mon   else ""
@@ -504,6 +506,8 @@ def build_summary_data(sh):
                         used_sku_by_month[m][sku] += 1
                     elif reason == 'Wrong Item':
                         wrong_sku_by_month[m][sku] += 1
+            else:
+                null_reason_by_month[m] += 1
 
     reason_pivot_data = [
         [damage_reason_by_month[m].get(r, 0) for r in REASON_LABELS]
@@ -566,7 +570,7 @@ def build_summary_data(sh):
     cd_batch.append({"range": "A1", "values": [mom_header] + mom_rows})
 
     # B) Donut cols J–K — SUBTOTAL recalcs when slicer hides MoM rows
-    donut_data = [["Order Type", "Count"]] + [
+    donut_data = [["Order Type - from tags", "Count"]] + [
         [t, f"=SUBTOTAL(9,{col}2:{col}{n + 1})"]
         for t, col in zip(ORDER_TYPES, ["B", "C", "D", "E", "F"])
     ]
@@ -701,7 +705,8 @@ def build_summary_data(sh):
             top_missing_skus, missing_sku_pivot_data,
             top_used_skus,   used_sku_pivot_data,
             top_wrong_skus,  wrong_sku_pivot_data,
-            LOSS_LABELS, loss_pivot_data)
+            LOSS_LABELS, loss_pivot_data,
+            null_reason_by_month)
 
 
 def create_dashboard_charts(service, sh, ws_cd_id, mom_rows, n_sku_series,
@@ -861,7 +866,7 @@ def create_dashboard_charts(service, sh, ws_cd_id, mom_rows, n_sku_series,
     donut_start_col = 9   # col J (0-indexed)
     requests_list.append({"addChart": {"chart": {
         "spec": {
-            "title": "Order Type Breakdown",
+            "title": "Order Type - from tags Breakdown",
             "pieChart": {
                 "legendPosition": "RIGHT_LEGEND",
                 "pieHole": 0.4,
@@ -1304,7 +1309,8 @@ def write_sku_report_tab(sh, gc, sorted_months,
                          top_missing_skus, missing_pivot,
                          top_used_skus,   used_pivot,
                          top_wrong_skus,  wrong_pivot,
-                         loss_labels=None, loss_pivot=None):
+                         loss_labels=None, loss_pivot=None,
+                         null_by_month=None):
     """
     Write a flat 'SKU Report' tab readable by n8n.
     Columns: SKU | Category | <Month 1> | ... | Total
@@ -1389,6 +1395,13 @@ def write_sku_report_tab(sh, gc, sorted_months,
                        for m_idx in range(len(sorted_months))]
             rows.append([label, "", "", "Revenue Loss"] + monthly + [sum(monthly)])
 
+    # Section 7: Null — notes present but reason could not be determined
+    if null_by_month:
+        rows.append(blank)
+        rows.append(["--- NULL / REASON NOT DETERMINED ---", "", "", "", *[""] * len(sorted_months), ""])
+        monthly = [null_by_month.get(m, 0) for m in sorted_months]
+        rows.append(["", "Could not determine reason", "", "Null"] + monthly + [sum(monthly)])
+
     _with_retry(ws.update, values=rows, range_name="A1", value_input_option="USER_ENTERED")
     print(f"  SKU Report tab written ({len(top_skus)} volume + {len(top_damaged_skus)} damaged + {len(top_missing_skus)} missing + {len(top_used_skus)} used + {len(top_wrong_skus)} wrong SKUs + {len(loss_labels or [])} loss rows).")
 
@@ -1436,7 +1449,7 @@ def create_readme_tab(service, sh):
         ("Column",                                            "What it tells you",         "subheader"),
         ("Order Number",                                      "Shopify order ID (e.g. #1234567).", "twoCol"),
         ("Order Date (IST)",                                  "Date and time the order was placed, in IST.", "twoCol"),
-        ("Order Type",                                        "Replacement / Refund / RTO / Returned / Undelivered / Other.", "twoCol"),
+        ("Order Type - from tags",                            "Replacement / Refund / RTO / Returned / Undelivered / Other.", "twoCol"),
         ("Cancel Reason",                                     "Why it was cancelled (Customer Cancel, IVR Cancel, etc.).", "twoCol"),
         ("Actions Taken",                                     "What the team did: Full Replacement / Partial Replacement / Refund Given.", "twoCol"),
         ("Notes",                                             "Raw Shopify order notes — includes damage reason and affected SKU.", "twoCol"),
@@ -1456,7 +1469,7 @@ def create_readme_tab(service, sh):
         ("DASHBOARD CHARTS",                                  "",                          "section"),
         ("Chart",                                             "What it shows",             "subheader"),
         ("Month-on-Month Order Concerns",                     "Count of each order type per month (stacked column).", "twoCol"),
-        ("Order Type Breakdown",                              "Share of each order type overall (donut).", "twoCol"),
+        ("Order Type - from tags Breakdown",                  "Share of each order type overall (donut).", "twoCol"),
         ("Top 15 SKUs by Volume",                            "Which SKUs appear most in issue orders (% stacked bar).", "twoCol"),
         ("Damage & Missing — Reason Breakdown",              "Count of Damaged / Missing / Wrong / Used / Other per month.", "twoCol"),
         ("Damaged SKUs / Missing SKUs",                      "Which specific SKUs are most reported as damaged or missing.", "twoCol"),
@@ -1615,7 +1628,8 @@ def main():
      top_missing_skus, missing_sku_pivot_data,
      top_used_skus,   used_sku_pivot_data,
      top_wrong_skus,  wrong_sku_pivot_data,
-     loss_labels,     loss_pivot_data) = build_summary_data(sh)
+     loss_labels,     loss_pivot_data,
+     null_by_month) = build_summary_data(sh)
     if ws_cd and mom_rows:
         create_dashboard_charts(service, sh, ws_cd.id, mom_rows, n_sku_series,
                                  damage_reason_col,
@@ -1635,7 +1649,8 @@ def main():
                              top_missing_skus, missing_sku_pivot_data,
                              top_used_skus,   used_sku_pivot_data,
                              top_wrong_skus,  wrong_sku_pivot_data,
-                             loss_labels,     loss_pivot_data)
+                             loss_labels,     loss_pivot_data,
+                             null_by_month)
 
     print("  Pausing 15s to avoid rate limits...")
     time.sleep(15)

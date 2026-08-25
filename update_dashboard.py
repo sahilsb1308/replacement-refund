@@ -50,7 +50,7 @@ def add_legend_and_polish():
 
     # Header
     ws_dash.update(
-        values=[["Order Type", "Meaning"]],
+        values=[["Order Type - from tags", "Meaning"]],
         range_name="P2",
         value_input_option="USER_ENTERED"
     )
