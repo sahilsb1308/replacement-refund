@@ -488,11 +488,16 @@ def build_summary_data(sh):
 
     null_reason_by_month: dict = defaultdict(int)
 
+    # Only count orders where Actions Taken is a known action value
+    VALID_ACTIONS = {"Full Replacement", "Partial Replacement", "Refund Given",
+                     "Full Replacement, Refund Given", "Partial Replacement, Refund Given",
+                     "Partial Replacement, Full Replacement, Refund Given"}
+
     for row in records[1:]:
         m       = row[col_mon]  if len(row) > col_mon  else ""
         note    = (row[col_notes] if col_notes and len(row) > col_notes else "") or ""
         actions = (row[col_act]   if col_act   and len(row) > col_act   else "") or ""
-        if not m:
+        if not m or actions.strip() not in VALID_ACTIONS:
             continue
         if note.strip():
             reason = _parse_reason(note)
@@ -510,8 +515,8 @@ def build_summary_data(sh):
                         wrong_sku_by_month[m][sku] += 1
             else:
                 null_reason_by_month[m] += 1
-        elif actions.strip():
-            # Actions Taken filled but no Notes — reason could not be determined
+        else:
+            # Valid action taken but no Notes — reason could not be determined
             null_reason_by_month[m] += 1
 
     reason_pivot_data = [
