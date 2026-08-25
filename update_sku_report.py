@@ -51,14 +51,17 @@ def main():
     service = build("sheets", "v4", credentials=creds)
 
     print("Rebuilding Dashboard charts...")
-    create_dashboard_charts(service, sh, ws_cd.id, mom_rows, n_sku_series,
-                             damage_reason_col,
-                             damaged_sku_col, n_damaged_skus,
-                             missing_sku_col,  n_missing_skus,
-                             used_sku_col,    n_used_skus,
-                             wrong_sku_col,   n_wrong_skus,
-                             loss_col)
-    create_month_slicer(service, sh, ws_cd.id, len(mom_rows))
+    try:
+        create_dashboard_charts(service, sh, ws_cd.id, mom_rows, n_sku_series,
+                                 damage_reason_col,
+                                 damaged_sku_col, n_damaged_skus,
+                                 missing_sku_col,  n_missing_skus,
+                                 used_sku_col,    n_used_skus,
+                                 wrong_sku_col,   n_wrong_skus,
+                                 loss_col)
+        create_month_slicer(service, sh, ws_cd.id, len(mom_rows))
+    except Exception as e:
+        print(f"  Warning: Dashboard charts failed ({e}). Continuing to SKU Report...")
 
     print("Writing SKU Report tab...")
     write_sku_report_tab(
