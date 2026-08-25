@@ -501,7 +501,7 @@ def build_summary_data(sh):
             continue
         if note.strip():
             reason = _parse_reason(note)
-            if reason:
+            if reason and reason != 'Other':
                 damage_reason_by_month[m][reason] += 1
                 sku = _parse_damage_sku(note)
                 if sku:
@@ -514,6 +514,7 @@ def build_summary_data(sh):
                     elif reason == 'Wrong Item':
                         wrong_sku_by_month[m][sku] += 1
             else:
+                # 'Other' or unparseable reason → could not determine
                 null_reason_by_month[m] += 1
         else:
             # Valid action taken but no Notes — reason could not be determined
