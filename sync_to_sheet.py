@@ -798,10 +798,11 @@ def create_dashboard_charts(service, sh, ws_cd_id, mom_rows, n_sku_series,
     try:
         _sheets_batch(service, layout_requests)
     except Exception as e:
-        if "unmerge" in str(e).lower() or "merged range" in str(e).lower():
-            clean = [r for r in layout_requests if "unmergeCells" not in r]
+        if "unmerge" in str(e).lower() or "merged range" in str(e).lower() or "mergecells" in str(e).lower():
+            # Skip all merge/unmerge ops — headers already merged from a prior run
+            clean = [r for r in layout_requests if "unmergeCells" not in r and "mergeCells" not in r]
             _sheets_batch(service, clean)
-            print("  Layout applied (unmergeCells skipped — cells already merged).")
+            print("  Layout applied (merge ops skipped — headers already merged).")
         else:
             raise
 
