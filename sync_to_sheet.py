@@ -717,7 +717,7 @@ def build_summary_data(sh):
             top_used_skus,   used_sku_pivot_data,
             top_wrong_skus,  wrong_sku_pivot_data,
             LOSS_LABELS, loss_pivot_data,
-            null_reason_by_month)
+            null_reason_by_month, damage_reason_by_month)
 
 
 def create_dashboard_charts(service, sh, ws_cd_id, mom_rows, n_sku_series,
@@ -1330,7 +1330,8 @@ def write_sku_report_tab(sh, gc, sorted_months,
                          top_used_skus,   used_pivot,
                          top_wrong_skus,  wrong_pivot,
                          loss_labels=None, loss_pivot=None,
-                         null_by_month=None):
+                         null_by_month=None,
+                         damage_reason_by_month=None):
     """
     Write a flat 'SKU Report' tab readable by n8n.
     Columns: SKU | Category | <Month 1> | ... | Total
@@ -1366,6 +1367,20 @@ def write_sku_report_tab(sh, gc, sorted_months,
 
     header = ["SKU", "Product Title", "Product Variant Title", "Category"] + sorted_months + ["Total"]
     rows   = [header]
+
+    # Category Total rows — used by n8n to compute breakdown bar totals
+    # Product Title = "CATEGORY_TOTAL" is the marker n8n looks for
+    if damage_reason_by_month is not None or null_by_month is not None:
+        rows.append(["--- CATEGORY TOTALS (used by n8n) ---", "", "", "", *[""] * len(sorted_months), ""])
+        for cat_label in ["Damaged", "Missing", "Wrong Item", "Used"]:
+            if damage_reason_by_month is not None:
+                monthly = [damage_reason_by_month[m].get(cat_label, 0) for m in sorted_months]
+            else:
+                monthly = [0] * len(sorted_months)
+            rows.append(["", "CATEGORY_TOTAL", "", cat_label] + monthly + [sum(monthly)])
+        null_monthly = [null_by_month.get(m, 0) for m in sorted_months] if null_by_month else [0] * len(sorted_months)
+        rows.append(["", "CATEGORY_TOTAL", "", "Null"] + null_monthly + [sum(null_monthly)])
+        rows.append(blank)
 
     # Section 1: Top 15 SKUs by volume
     rows.append(["--- TOP 15 SKUs BY ISSUE VOLUME ---", "", "", "", *[""] * len(sorted_months), ""])
@@ -1649,7 +1664,7 @@ def main():
      top_used_skus,   used_sku_pivot_data,
      top_wrong_skus,  wrong_sku_pivot_data,
      loss_labels,     loss_pivot_data,
-     null_by_month) = build_summary_data(sh)
+     null_by_month,   damage_reason_by_month) = build_summary_data(sh)
     if ws_cd and mom_rows:
         create_dashboard_charts(service, sh, ws_cd.id, mom_rows, n_sku_series,
                                  damage_reason_col,
@@ -1670,7 +1685,7 @@ def main():
                              top_used_skus,   used_sku_pivot_data,
                              top_wrong_skus,  wrong_sku_pivot_data,
                              loss_labels,     loss_pivot_data,
-                             null_by_month)
+                             null_by_month,   damage_reason_by_month)
 
     print("  Pausing 15s to avoid rate limits...")
     time.sleep(15)
