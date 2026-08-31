@@ -1633,7 +1633,7 @@ def main():
     print("Connecting to Google Sheets...")
     creds   = Credentials.from_service_account_file(CREDS_FILE, scopes=SCOPES)
     gc      = gspread.authorize(creds)
-    sh      = gc.open_by_key(SHEET_ID)
+    sh      = _with_retry(gc.open_by_key, SHEET_ID)
     service = build("sheets", "v4", credentials=creds)
 
     # ── 3. Write monthly tab ──────────────────────────────────────────────────
