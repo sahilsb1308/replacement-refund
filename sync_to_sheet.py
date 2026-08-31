@@ -1691,11 +1691,17 @@ def main():
     time.sleep(15)
 
     # ── 6. README tab ─────────────────────────────────────────────────────────
-    create_readme_tab(service, sh)
+    try:
+        create_readme_tab(service, sh)
+    except Exception as e:
+        print(f"  Warning: README tab skipped ({e}).")
 
     # ── 7. Polish the sheet ───────────────────────────────────────────────────
     print("\nPolishing sheet...")
-    polish_sheet(service, sh)
+    try:
+        polish_sheet(service, sh)
+    except Exception as e:
+        print(f"  Warning: Polish step skipped ({e}).")
 
     print(f"\nDone! https://docs.google.com/spreadsheets/d/{SHEET_ID}/edit")
 
