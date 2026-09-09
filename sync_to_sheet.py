@@ -530,27 +530,48 @@ def build_summary_data(sh):
         for m_data in by_month.values():
             for sku, cnt in m_data.items():
                 totals[sku] += cnt
-        return [s for s, _ in sorted(totals.items(), key=lambda x: -x[1])[:n]]
+        ranked = [s for s, _ in sorted(totals.items(), key=lambda x: -x[1])]
+        return ranked[:n] if n is not None else ranked
 
-    top_damaged_skus = _top_skus_for(damaged_sku_by_month)
+    top_damaged_skus  = _top_skus_for(damaged_sku_by_month)          # top 10 for charts
+    all_damaged_skus  = _top_skus_for(damaged_sku_by_month, n=None)  # all for SKU Report
     top_missing_skus = _top_skus_for(missing_sku_by_month)
+    all_missing_skus = _top_skus_for(missing_sku_by_month, n=None)
     top_used_skus    = _top_skus_for(used_sku_by_month)
+    all_used_skus    = _top_skus_for(used_sku_by_month, n=None)
     top_wrong_skus   = _top_skus_for(wrong_sku_by_month)
+    all_wrong_skus   = _top_skus_for(wrong_sku_by_month, n=None)
 
     damaged_sku_pivot_data = [
         [damaged_sku_by_month[m].get(sku, 0) for sku in top_damaged_skus]
+        for m in sorted_months
+    ]
+    all_damaged_pivot_data = [
+        [damaged_sku_by_month[m].get(sku, 0) for sku in all_damaged_skus]
         for m in sorted_months
     ]
     missing_sku_pivot_data = [
         [missing_sku_by_month[m].get(sku, 0) for sku in top_missing_skus]
         for m in sorted_months
     ]
+    all_missing_pivot_data = [
+        [missing_sku_by_month[m].get(sku, 0) for sku in all_missing_skus]
+        for m in sorted_months
+    ]
     used_sku_pivot_data = [
         [used_sku_by_month[m].get(sku, 0) for sku in top_used_skus]
         for m in sorted_months
     ]
+    all_used_pivot_data = [
+        [used_sku_by_month[m].get(sku, 0) for sku in all_used_skus]
+        for m in sorted_months
+    ]
     wrong_sku_pivot_data = [
         [wrong_sku_by_month[m].get(sku, 0) for sku in top_wrong_skus]
+        for m in sorted_months
+    ]
+    all_wrong_pivot_data = [
+        [wrong_sku_by_month[m].get(sku, 0) for sku in all_wrong_skus]
         for m in sorted_months
     ]
 
@@ -717,7 +738,11 @@ def build_summary_data(sh):
             top_used_skus,   used_sku_pivot_data,
             top_wrong_skus,  wrong_sku_pivot_data,
             LOSS_LABELS, loss_pivot_data,
-            null_reason_by_month, damage_reason_by_month)
+            null_reason_by_month, damage_reason_by_month,
+            all_damaged_skus, all_damaged_pivot_data,
+            all_missing_skus, all_missing_pivot_data,
+            all_used_skus,   all_used_pivot_data,
+            all_wrong_skus,  all_wrong_pivot_data)
 
 
 def create_dashboard_charts(service, sh, ws_cd_id, mom_rows, n_sku_series,
@@ -1331,7 +1356,11 @@ def write_sku_report_tab(sh, gc, sorted_months,
                          top_wrong_skus,  wrong_pivot,
                          loss_labels=None, loss_pivot=None,
                          null_by_month=None,
-                         damage_reason_by_month=None):
+                         damage_reason_by_month=None,
+                         all_damaged_skus=None, all_damaged_pivot=None,
+                         all_missing_skus=None, all_missing_pivot=None,
+                         all_used_skus=None,    all_used_pivot=None,
+                         all_wrong_skus=None,   all_wrong_pivot=None):
     """
     Write a flat 'SKU Report' tab readable by n8n.
     Columns: SKU | Category | <Month 1> | ... | Total
@@ -1389,35 +1418,43 @@ def write_sku_report_tab(sh, gc, sorted_months,
                    for m_idx in range(len(sorted_months))]
         rows.append(_row(sku, "Issue Volume", monthly))
 
-    # Section 2: Damaged SKUs
+    # Section 2: Damaged SKUs — use full list if available, else top N
+    _dmg_skus  = all_damaged_skus  if all_damaged_skus  is not None else top_damaged_skus
+    _dmg_pivot = all_damaged_pivot if all_damaged_pivot is not None else damaged_pivot
     rows.append(blank)
-    rows.append(["--- TOP DAMAGED SKUs ---", "", "", "", *[""] * len(sorted_months), ""])
-    for i, sku in enumerate(top_damaged_skus):
-        monthly = [damaged_pivot[m_idx][i] if m_idx < len(damaged_pivot) else 0
+    rows.append(["--- ALL DAMAGED SKUs ---", "", "", "", *[""] * len(sorted_months), ""])
+    for i, sku in enumerate(_dmg_skus):
+        monthly = [_dmg_pivot[m_idx][i] if m_idx < len(_dmg_pivot) else 0
                    for m_idx in range(len(sorted_months))]
         rows.append(_row(sku, "Damaged", monthly))
 
-    # Section 3: Missing SKUs
+    # Section 3: Missing SKUs — use full list if available
+    _mis_skus  = all_missing_skus  if all_missing_skus  is not None else top_missing_skus
+    _mis_pivot = all_missing_pivot if all_missing_pivot is not None else missing_pivot
     rows.append(blank)
-    rows.append(["--- TOP MISSING SKUs ---", "", "", "", *[""] * len(sorted_months), ""])
-    for i, sku in enumerate(top_missing_skus):
-        monthly = [missing_pivot[m_idx][i] if m_idx < len(missing_pivot) else 0
+    rows.append(["--- ALL MISSING SKUs ---", "", "", "", *[""] * len(sorted_months), ""])
+    for i, sku in enumerate(_mis_skus):
+        monthly = [_mis_pivot[m_idx][i] if m_idx < len(_mis_pivot) else 0
                    for m_idx in range(len(sorted_months))]
         rows.append(_row(sku, "Missing", monthly))
 
-    # Section 4: Used SKUs
+    # Section 4: Used SKUs — use full list if available
+    _used_skus  = all_used_skus  if all_used_skus  is not None else top_used_skus
+    _used_pivot = all_used_pivot if all_used_pivot is not None else used_pivot
     rows.append(blank)
-    rows.append(["--- TOP USED PRODUCT SKUs ---", "", "", "", *[""] * len(sorted_months), ""])
-    for i, sku in enumerate(top_used_skus):
-        monthly = [used_pivot[m_idx][i] if m_idx < len(used_pivot) else 0
+    rows.append(["--- ALL USED PRODUCT SKUs ---", "", "", "", *[""] * len(sorted_months), ""])
+    for i, sku in enumerate(_used_skus):
+        monthly = [_used_pivot[m_idx][i] if m_idx < len(_used_pivot) else 0
                    for m_idx in range(len(sorted_months))]
         rows.append(_row(sku, "Used", monthly))
 
-    # Section 5: Wrong Item SKUs
+    # Section 5: Wrong Item SKUs — use full list if available
+    _wrg_skus  = all_wrong_skus  if all_wrong_skus  is not None else top_wrong_skus
+    _wrg_pivot = all_wrong_pivot if all_wrong_pivot is not None else wrong_pivot
     rows.append(blank)
-    rows.append(["--- TOP WRONG ITEM SKUs ---", "", "", "", *[""] * len(sorted_months), ""])
-    for i, sku in enumerate(top_wrong_skus):
-        monthly = [wrong_pivot[m_idx][i] if m_idx < len(wrong_pivot) else 0
+    rows.append(["--- ALL WRONG ITEM SKUs ---", "", "", "", *[""] * len(sorted_months), ""])
+    for i, sku in enumerate(_wrg_skus):
+        monthly = [_wrg_pivot[m_idx][i] if m_idx < len(_wrg_pivot) else 0
                    for m_idx in range(len(sorted_months))]
         rows.append(_row(sku, "Wrong Item", monthly))
 
@@ -1438,7 +1475,7 @@ def write_sku_report_tab(sh, gc, sorted_months,
         rows.append(["", "Could not determine reason", "", "Null"] + monthly + [sum(monthly)])
 
     _with_retry(ws.update, values=rows, range_name="A1", value_input_option="USER_ENTERED")
-    print(f"  SKU Report tab written ({len(top_skus)} volume + {len(top_damaged_skus)} damaged + {len(top_missing_skus)} missing + {len(top_used_skus)} used + {len(top_wrong_skus)} wrong SKUs + {len(loss_labels or [])} loss rows).")
+    print(f"  SKU Report tab written ({len(top_skus)} volume + {len(_dmg_skus)} damaged + {len(_mis_skus)} missing + {len(_used_skus)} used + {len(_wrg_skus)} wrong SKUs + {len(loss_labels or [])} loss rows).")
 
 
 # ── README tab ────────────────────────────────────────────────────────────────
@@ -1664,7 +1701,11 @@ def main():
      top_used_skus,   used_sku_pivot_data,
      top_wrong_skus,  wrong_sku_pivot_data,
      loss_labels,     loss_pivot_data,
-     null_by_month,   damage_reason_by_month) = build_summary_data(sh)
+     null_by_month,   damage_reason_by_month,
+     all_damaged_skus, all_damaged_pivot_data,
+     all_missing_skus, all_missing_pivot_data,
+     all_used_skus,   all_used_pivot_data,
+     all_wrong_skus,  all_wrong_pivot_data) = build_summary_data(sh)
     if ws_cd and mom_rows:
         create_dashboard_charts(service, sh, ws_cd.id, mom_rows, n_sku_series,
                                  damage_reason_col,
@@ -1685,7 +1726,11 @@ def main():
                              top_used_skus,   used_sku_pivot_data,
                              top_wrong_skus,  wrong_sku_pivot_data,
                              loss_labels,     loss_pivot_data,
-                             null_by_month,   damage_reason_by_month)
+                             null_by_month,   damage_reason_by_month,
+                             all_damaged_skus, all_damaged_pivot_data,
+                             all_missing_skus, all_missing_pivot_data,
+                             all_used_skus,   all_used_pivot_data,
+                             all_wrong_skus,  all_wrong_pivot_data)
 
     print("  Pausing 15s to avoid rate limits...")
     time.sleep(15)

@@ -46,7 +46,11 @@ def main():
      top_used_skus,   used_sku_pivot_data,
      top_wrong_skus,  wrong_sku_pivot_data,
      loss_labels,     loss_pivot_data,
-     null_by_month,   damage_reason_by_month) = result
+     null_by_month,   damage_reason_by_month,
+     all_damaged_skus, all_damaged_pivot_data,
+     all_missing_skus, all_missing_pivot_data,
+     all_used_skus,   all_used_pivot_data,
+     all_wrong_skus,  all_wrong_pivot_data) = result
 
     service = build("sheets", "v4", credentials=creds)
 
@@ -73,6 +77,10 @@ def main():
         top_wrong_skus,  wrong_sku_pivot_data,
         loss_labels,     loss_pivot_data,
         null_by_month,   damage_reason_by_month,
+        all_damaged_skus, all_damaged_pivot_data,
+        all_missing_skus, all_missing_pivot_data,
+        all_used_skus,   all_used_pivot_data,
+        all_wrong_skus,  all_wrong_pivot_data,
     )
 
     print(f"\nDone! https://docs.google.com/spreadsheets/d/{SHEET_ID}/edit")
