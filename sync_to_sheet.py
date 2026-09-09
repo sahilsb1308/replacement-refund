@@ -389,11 +389,11 @@ def _parse_reason(note):
 
 
 def _parse_damage_sku(note):
-    """Return the affected SKU from a note (first SKU on the sku- / ReplacementSKU: line).
+    """Return the affected SKU from a note. Handles 'SKU:', 'Skucode:', 'Replacement SKU:' etc.
     Requires a hyphen so free-text values like 'ALL' or 'missing' are ignored."""
     for line in note.split('\n'):
         line = line.strip()
-        m = re.match(r'(?:replacement\s*)?sku[-:\s=]+(.+)', line, re.IGNORECASE)
+        m = re.match(r'(?:replacement\s*)?sku(?:code)?[-:\s=]+(.+)', line, re.IGNORECASE)
         if m:
             raw = m.group(1).strip()
             sku = re.split(r'[\s,;\n]+', raw)[0].strip()
