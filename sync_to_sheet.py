@@ -76,7 +76,7 @@ def fetch_shopify_token() -> str:
     )
     r.raise_for_status()
     body = r.json()
-    token = body.get("token") or body.get("access_token") or body.get("accessToken")
+    token = (body.get("data") or {}).get("token") or body.get("token")
     if not token:
         raise RuntimeError(f"Token API response did not contain a token: {body}")
     return token
