@@ -58,8 +58,30 @@ def _sheets_batch(service, requests_list):
 
 # ── Config ────────────────────────────────────────────────────────────────────
 SHOPIFY_STORE   = "swiss-beauty-dev.myshopify.com"
-SHOPIFY_TOKEN   = os.environ.get("SHOPIFY_TOKEN", "")
 SHOPIFY_API_VER = "2024-01"
+
+_TOKEN_API_URL    = "https://backgroundprocessor.swiss-custom.site/api/public/token/generate"
+_TOKEN_API_SCOPES = ["read_all_orders", "read_products", "read_customers", "read_inventory", "read_orders"]
+
+def fetch_shopify_token() -> str:
+    """Fetch a fresh Shopify access token from the token API before each run."""
+    api_key = os.environ.get("SHOPIFY_TOKEN_API_KEY") or ""
+    if not api_key:
+        raise EnvironmentError("SHOPIFY_TOKEN_API_KEY environment variable is not set or is empty")
+    r = requests.post(
+        _TOKEN_API_URL,
+        headers={"Authorization": api_key, "Content-Type": "application/json"},
+        json={"scopes": _TOKEN_API_SCOPES},
+        timeout=30,
+    )
+    r.raise_for_status()
+    body = r.json()
+    token = body.get("token") or body.get("access_token") or body.get("accessToken")
+    if not token:
+        raise RuntimeError(f"Token API response did not contain a token: {body}")
+    return token
+
+SHOPIFY_TOKEN = fetch_shopify_token()
 SHEET_ID           = "1VptcDahrMKwqgo3wWmxpoVzXEyY5je2U73mvx4rOYnU"
 PRODUCT_MASTER_ID  = "10NEmeWHhit99ToTr-kTvEHyaC2fgOYd1v6quVKrZEZk"
 CREDS_FILE      = (

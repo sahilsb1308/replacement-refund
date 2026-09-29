@@ -49,7 +49,7 @@ jobs:
 
       - name: Run sync
         env:
-          SHOPIFY_TOKEN: ${{ secrets.SHOPIFY_TOKEN }}
+          SHOPIFY_TOKEN_API_KEY: ${{ secrets.SHOPIFY_TOKEN_API_KEY }}
           GOOGLE_CREDS_FILE: replacement-and-refund-8a7f8939a062.json
         run: |
           MONTH="${{ github.event.inputs.month }}"
