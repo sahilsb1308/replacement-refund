@@ -341,7 +341,7 @@ def write_tab(ws, headers, rows):
         start_row = i + 1
         _with_retry(ws.update, values=chunk, range_name=f"A{start_row}", value_input_option="USER_ENTERED")
     last_col = _col_letter(len(headers) - 1)   # handles >26 cols (AA, AB, …)
-    ws.format(f"A1:{last_col}1", {
+    _with_retry(ws.format, f"A1:{last_col}1", {
         "textFormat": {"bold": True, "foregroundColor": {"red": 1, "green": 1, "blue": 1}},
         "backgroundColor": {"red": 0.13, "green": 0.13, "blue": 0.13},
     })
@@ -349,7 +349,7 @@ def write_tab(ws, headers, rows):
     # Notes is col H in month tabs, col I in All Data (which has "Month" prepended)
     notes_col = "I" if "Month" in headers else "H"
     if rows:
-        ws.format(f"{notes_col}2:{notes_col}{len(rows) + 1}", {"wrapStrategy": "WRAP"})
+        _with_retry(ws.format, f"{notes_col}2:{notes_col}{len(rows) + 1}", {"wrapStrategy": "WRAP"})
 
 
 def rebuild_all_data(sh):
@@ -1702,6 +1702,8 @@ def main():
     print(f"  {len(rows)} rows written.")
 
     # ── 4. Rebuild All Data ───────────────────────────────────────────────────
+    print("  Pausing 30s to let Sheets quota reset before All Data rebuild...")
+    time.sleep(30)
     print("\nRebuilding 'All Data' tab...")
     rebuild_all_data(sh)
 
