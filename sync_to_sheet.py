@@ -1669,6 +1669,19 @@ def parse_month_arg(arg: str):
         raise SystemExit(f"Bad month argument '{arg}'. Expected format: YYYY-MM (e.g. 2026-07)")
 
 
+def sync_month(sh, year: int, month: int):
+    """Fetch from Shopify and write/overwrite one monthly tab."""
+    month_name = datetime(year, month, 1).strftime("%B %Y")
+    print(f"\nFetching {month_name} orders from Shopify...")
+    orders = fetch_month_orders(year, month)
+    print(f"Total: {len(orders)} orders")
+    rows = [build_row(o) for o in orders]
+    print(f"Writing '{month_name}' tab...")
+    ws_month = get_or_create_tab(sh, month_name)
+    write_tab(ws_month, MONTH_HEADERS, rows)
+    print(f"  {len(rows)} rows written.")
+
+
 def main():
     if len(sys.argv) > 1:
         year, month = parse_month_arg(sys.argv[1])
@@ -1681,25 +1694,22 @@ def main():
 
     print(f"=== Swiss Beauty Returns & Refund Tracker — {month_name} ===")
 
-    # ── 1. Fetch from Shopify ─────────────────────────────────────────────────
-    print(f"\nFetching {month_name} orders from Shopify...")
-    orders = fetch_month_orders(year, month)
-    print(f"Total: {len(orders)} orders\n")
-
-    rows = [build_row(o) for o in orders]
-
-    # ── 2. Connect to Sheets ──────────────────────────────────────────────────
+    # ── 1. Connect to Sheets ──────────────────────────────────────────────────
     print("Connecting to Google Sheets...")
     creds   = Credentials.from_service_account_file(CREDS_FILE, scopes=SCOPES)
     gc      = gspread.authorize(creds)
     sh      = _with_retry(gc.open_by_key, SHEET_ID)
     service = build("sheets", "v4", credentials=creds)
 
-    # ── 3. Write monthly tab ──────────────────────────────────────────────────
-    print(f"Writing '{month_name}' tab...")
-    ws_month = get_or_create_tab(sh, month_name)
-    write_tab(ws_month, MONTH_HEADERS, rows)
-    print(f"  {len(rows)} rows written.")
+    # ── 2. Sync current month ─────────────────────────────────────────────────
+    sync_month(sh, year, month)
+
+    # ── 3. Re-sync previous month (t-1) to catch late-tagged orders ──────────
+    prev_dt    = datetime(year, month, 1) - timedelta(days=1)
+    prev_year  = prev_dt.year
+    prev_month = prev_dt.month
+    print(f"\nRe-syncing previous month ({prev_dt.strftime('%B %Y')}) for late-tagged orders...")
+    sync_month(sh, prev_year, prev_month)
 
     # ── 4. Rebuild All Data ───────────────────────────────────────────────────
     print("  Pausing 30s to let Sheets quota reset before All Data rebuild...")
