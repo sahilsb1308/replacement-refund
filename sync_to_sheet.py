@@ -134,6 +134,27 @@ query FetchOrders($query: String!, $after: String) {
 }
 """
 
+GQL_SALES_QUERY = """
+query FetchSalesOrders($query: String!, $after: String) {
+  orders(first: 100, query: $query, after: $after, sortKey: CREATED_AT) {
+    pageInfo { hasNextPage endCursor }
+    edges {
+      node {
+        lineItems(first: 20) {
+          edges {
+            node {
+              sku
+              quantity
+              originalUnitPriceSet { shopMoney { amount } }
+            }
+          }
+        }
+      }
+    }
+  }
+}
+"""
+
 # ── Shopify ───────────────────────────────────────────────────────────────────
 
 def shopify_gql(variables):
@@ -175,6 +196,55 @@ def fetch_month_orders(year: int, month: int):
             break
         cursor = result["pageInfo"]["endCursor"]
     return orders
+
+
+def fetch_sku_sales(year: int, month: int, period_end_day: int) -> dict:
+    """
+    Fetch ALL orders from day 1 to period_end_day of the given month.
+    Returns {sku: {"orders": int, "revenue": float}} — orders = number of
+    order line items containing that SKU, revenue = qty × unit price sum.
+    """
+    month_start = datetime(year, month, 1, tzinfo=timezone.utc) - timedelta(hours=5, minutes=30)
+    period_end  = datetime(year, month, period_end_day, 23, 59, 59, tzinfo=timezone.utc) - timedelta(hours=5, minutes=30)
+    q = (
+        f"created_at:>={month_start.strftime('%Y-%m-%dT%H:%M:%SZ')} "
+        f"created_at:<={period_end.strftime('%Y-%m-%dT%H:%M:%SZ')}"
+    )
+
+    url  = f"https://{SHOPIFY_STORE}/admin/api/{SHOPIFY_API_VER}/graphql.json"
+    hdrs = {"X-Shopify-Access-Token": SHOPIFY_TOKEN, "Content-Type": "application/json"}
+
+    sku_data: dict = {}
+    cursor, page = None, 0
+    while True:
+        page += 1
+        print(f"  Sales page {page}...", end=" ", flush=True)
+        r = requests.post(url, headers=hdrs,
+                          json={"query": GQL_SALES_QUERY, "variables": {"query": q, "after": cursor}},
+                          timeout=30)
+        r.raise_for_status()
+        body = r.json()
+        if "errors" in body:
+            raise RuntimeError(body["errors"])
+        result = body["data"]["orders"]
+        for e in result["edges"]:
+            for li in e["node"]["lineItems"]["edges"]:
+                n   = li["node"]
+                sku = (n.get("sku") or "").strip()
+                if not sku:
+                    continue
+                qty   = int(n.get("quantity") or 0)
+                price = float(((n.get("originalUnitPriceSet") or {}).get("shopMoney") or {}).get("amount") or 0)
+                if sku not in sku_data:
+                    sku_data[sku] = {"orders": 0, "revenue": 0.0}
+                sku_data[sku]["orders"]  += 1
+                sku_data[sku]["revenue"] += qty * price
+        print(f"{len(result['edges'])} orders")
+        if not result["pageInfo"]["hasNextPage"]:
+            break
+        cursor = result["pageInfo"]["endCursor"]
+    print(f"  Sales fetch done: {len(sku_data)} unique SKUs across {page} pages.")
+    return sku_data
 
 # ── Row builders ──────────────────────────────────────────────────────────────
 
@@ -1382,10 +1452,13 @@ def write_sku_report_tab(sh, gc, sorted_months,
                          all_damaged_skus=None, all_damaged_pivot=None,
                          all_missing_skus=None, all_missing_pivot=None,
                          all_used_skus=None,    all_used_pivot=None,
-                         all_wrong_skus=None,   all_wrong_pivot=None):
+                         all_wrong_skus=None,   all_wrong_pivot=None,
+                         sku_sales=None, report_days=30):
     """
     Write a flat 'SKU Report' tab readable by n8n.
-    Columns: SKU | Category | <Month 1> | ... | Total
+    Columns: SKU | Category | <Month 1> | ... | Total | Total Orders (Xd) | Revenue (Xd) | Revenue Contribution %
+    sku_sales: {sku: {"orders": int, "revenue": float}} for the current period.
+    report_days: 15 or 30 — used in column headers.
     """
     TAB_NAME = "SKU Report"
     try:
@@ -1410,31 +1483,47 @@ def write_sku_report_tab(sh, gc, sorted_months,
     except Exception as e:
         print(f"  Warning: could not load product master: {e}")
 
+    _sales       = sku_sales or {}
+    _total_rev   = sum(v["revenue"] for v in _sales.values()) or 1  # avoid div/0
+    _period_label = f"{report_days}d"
+
     def _row(sku, category, monthly):
-        info = sku_info.get(sku.upper(), {})
-        return [sku, info.get("title", ""), info.get("variant", ""), category] + monthly + [sum(monthly)]
+        info     = sku_info.get(sku.upper(), {})
+        s        = _sales.get(sku) or _sales.get(sku.upper()) or {}
+        orders   = s.get("orders", "")
+        revenue  = round(s.get("revenue", 0), 2) if s else ""
+        contrib  = round(s["revenue"] / _total_rev * 100, 2) if s.get("revenue") else ""
+        return ([sku, info.get("title", ""), info.get("variant", ""), category]
+                + monthly + [sum(monthly), orders, revenue, contrib])
 
-    blank = ["", "", "", "", *[""] * len(sorted_months), ""]
+    blank = ["", "", "", "", *[""] * len(sorted_months), "", "", "", ""]
 
-    header = ["SKU", "Product Title", "Product Variant Title", "Category"] + sorted_months + ["Total"]
+    header = (["SKU", "Product Title", "Product Variant Title", "Category"]
+              + sorted_months
+              + [f"Total", f"Total Orders ({_period_label})",
+                 f"Revenue ({_period_label}) (₹)", f"Revenue Contribution %"])
     rows   = [header]
+
+    # helper: section divider row — padded to full width
+    def _div(label):
+        return [label, "", "", "", *[""] * len(sorted_months), "", "", "", ""]
 
     # Category Total rows — used by n8n to compute breakdown bar totals
     # Product Title = "CATEGORY_TOTAL" is the marker n8n looks for
     if damage_reason_by_month is not None or null_by_month is not None:
-        rows.append(["--- CATEGORY TOTALS (used by n8n) ---", "", "", "", *[""] * len(sorted_months), ""])
+        rows.append(_div("--- CATEGORY TOTALS (used by n8n) ---"))
         for cat_label in ["Damaged", "Missing", "Wrong Item", "Used"]:
             if damage_reason_by_month is not None:
                 monthly = [damage_reason_by_month[m].get(cat_label, 0) for m in sorted_months]
             else:
                 monthly = [0] * len(sorted_months)
-            rows.append(["", "CATEGORY_TOTAL", "", cat_label] + monthly + [sum(monthly)])
+            rows.append(["", "CATEGORY_TOTAL", "", cat_label] + monthly + [sum(monthly), "", "", ""])
         null_monthly = [null_by_month.get(m, 0) for m in sorted_months] if null_by_month else [0] * len(sorted_months)
-        rows.append(["", "CATEGORY_TOTAL", "", "Null"] + null_monthly + [sum(null_monthly)])
+        rows.append(["", "CATEGORY_TOTAL", "", "Null"] + null_monthly + [sum(null_monthly), "", "", ""])
         rows.append(blank)
 
     # Section 1: Top 15 SKUs by volume
-    rows.append(["--- TOP 15 SKUs BY ISSUE VOLUME ---", "", "", "", *[""] * len(sorted_months), ""])
+    rows.append(_div("--- TOP 15 SKUs BY ISSUE VOLUME ---"))
     for i, sku in enumerate(top_skus):
         monthly = [sku_pivot[m_idx][i] if m_idx < len(sku_pivot) else 0
                    for m_idx in range(len(sorted_months))]
@@ -1444,7 +1533,7 @@ def write_sku_report_tab(sh, gc, sorted_months,
     _dmg_skus  = all_damaged_skus  if all_damaged_skus  is not None else top_damaged_skus
     _dmg_pivot = all_damaged_pivot if all_damaged_pivot is not None else damaged_pivot
     rows.append(blank)
-    rows.append(["--- ALL DAMAGED SKUs ---", "", "", "", *[""] * len(sorted_months), ""])
+    rows.append(_div("--- ALL DAMAGED SKUs ---"))
     for i, sku in enumerate(_dmg_skus):
         monthly = [_dmg_pivot[m_idx][i] if m_idx < len(_dmg_pivot) else 0
                    for m_idx in range(len(sorted_months))]
@@ -1454,7 +1543,7 @@ def write_sku_report_tab(sh, gc, sorted_months,
     _mis_skus  = all_missing_skus  if all_missing_skus  is not None else top_missing_skus
     _mis_pivot = all_missing_pivot if all_missing_pivot is not None else missing_pivot
     rows.append(blank)
-    rows.append(["--- ALL MISSING SKUs ---", "", "", "", *[""] * len(sorted_months), ""])
+    rows.append(_div("--- ALL MISSING SKUs ---"))
     for i, sku in enumerate(_mis_skus):
         monthly = [_mis_pivot[m_idx][i] if m_idx < len(_mis_pivot) else 0
                    for m_idx in range(len(sorted_months))]
@@ -1464,7 +1553,7 @@ def write_sku_report_tab(sh, gc, sorted_months,
     _used_skus  = all_used_skus  if all_used_skus  is not None else top_used_skus
     _used_pivot = all_used_pivot if all_used_pivot is not None else used_pivot
     rows.append(blank)
-    rows.append(["--- ALL USED PRODUCT SKUs ---", "", "", "", *[""] * len(sorted_months), ""])
+    rows.append(_div("--- ALL USED PRODUCT SKUs ---"))
     for i, sku in enumerate(_used_skus):
         monthly = [_used_pivot[m_idx][i] if m_idx < len(_used_pivot) else 0
                    for m_idx in range(len(sorted_months))]
@@ -1474,7 +1563,7 @@ def write_sku_report_tab(sh, gc, sorted_months,
     _wrg_skus  = all_wrong_skus  if all_wrong_skus  is not None else top_wrong_skus
     _wrg_pivot = all_wrong_pivot if all_wrong_pivot is not None else wrong_pivot
     rows.append(blank)
-    rows.append(["--- ALL WRONG ITEM SKUs ---", "", "", "", *[""] * len(sorted_months), ""])
+    rows.append(_div("--- ALL WRONG ITEM SKUs ---"))
     for i, sku in enumerate(_wrg_skus):
         monthly = [_wrg_pivot[m_idx][i] if m_idx < len(_wrg_pivot) else 0
                    for m_idx in range(len(sorted_months))]
@@ -1483,18 +1572,18 @@ def write_sku_report_tab(sh, gc, sorted_months,
     # Section 6: Revenue Loss breakdown
     if loss_labels and loss_pivot:
         rows.append(blank)
-        rows.append(["--- REVENUE LOSS BREAKDOWN ---", "", "", "", *[""] * len(sorted_months), ""])
+        rows.append(_div("--- REVENUE LOSS BREAKDOWN ---"))
         for i, label in enumerate(loss_labels):
             monthly = [loss_pivot[m_idx][i] if m_idx < len(loss_pivot) else 0
                        for m_idx in range(len(sorted_months))]
-            rows.append([label, "", "", "Revenue Loss"] + monthly + [sum(monthly)])
+            rows.append([label, "", "", "Revenue Loss"] + monthly + [sum(monthly), "", "", ""])
 
     # Section 7: Null — notes present but reason could not be determined
     if null_by_month:
         rows.append(blank)
-        rows.append(["--- NULL / REASON NOT DETERMINED ---", "", "", "", *[""] * len(sorted_months), ""])
+        rows.append(_div("--- NULL / REASON NOT DETERMINED ---"))
         monthly = [null_by_month.get(m, 0) for m in sorted_months]
-        rows.append(["", "Could not determine reason", "", "Null"] + monthly + [sum(monthly)])
+        rows.append(["", "Could not determine reason", "", "Null"] + monthly + [sum(monthly), "", "", ""])
 
     _with_retry(ws.update, values=rows, range_name="A1", value_input_option="USER_ENTERED")
     print(f"  SKU Report tab written ({len(top_skus)} volume + {len(_dmg_skus)} damaged + {len(_mis_skus)} missing + {len(_used_skus)} used + {len(_wrg_skus)} wrong SKUs + {len(loss_labels or [])} loss rows).")
@@ -1683,12 +1772,22 @@ def sync_month(sh, year: int, month: int):
 
 
 def main():
+    now_ist = datetime.now(timezone.utc) + timedelta(hours=5, minutes=30)
+
     if len(sys.argv) > 1:
         year, month = parse_month_arg(sys.argv[1])
     else:
-        now   = datetime.now(timezone.utc) + timedelta(hours=5, minutes=30)
-        year  = now.year
-        month = now.month
+        year  = now_ist.year
+        month = now_ist.month
+
+    # Determine report window: ≤15th → 15-day run, >15th → full month
+    last_day_of_month = calendar.monthrange(year, month)[1]
+    if now_ist.year == year and now_ist.month == month:
+        run_day = now_ist.day
+    else:
+        run_day = last_day_of_month   # manual past-month run → treat as full month
+    period_end_day = 15 if run_day <= 15 else last_day_of_month
+    report_days    = period_end_day
 
     month_name = datetime(year, month, 1).strftime("%B %Y")
 
@@ -1720,7 +1819,15 @@ def main():
     print("  Pausing 15s to avoid rate limits...")
     time.sleep(15)
 
-    # ── 5. Rebuild _ChartData + create Dashboard charts ───────────────────────
+    # ── 5. Fetch SKU sales data for the current period ────────────────────────
+    print(f"\nFetching SKU sales data for days 1–{period_end_day} of {month_name} ({report_days}d window)...")
+    try:
+        sku_sales = fetch_sku_sales(year, month, period_end_day)
+    except Exception as e:
+        print(f"  Warning: could not fetch SKU sales data: {e}")
+        sku_sales = {}
+
+    # ── 6. Rebuild _ChartData + create Dashboard charts ───────────────────────
     print("\nUpdating chart data...")
     (ws_cd, mom_rows, n_sku_series, damage_reason_col,
      damaged_sku_col, n_damaged_skus,
@@ -1764,7 +1871,8 @@ def main():
                              all_damaged_skus, all_damaged_pivot_data,
                              all_missing_skus, all_missing_pivot_data,
                              all_used_skus,   all_used_pivot_data,
-                             all_wrong_skus,  all_wrong_pivot_data)
+                             all_wrong_skus,  all_wrong_pivot_data,
+                             sku_sales=sku_sales, report_days=report_days)
 
     print("  Pausing 15s to avoid rate limits...")
     time.sleep(15)
