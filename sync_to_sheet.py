@@ -1487,22 +1487,85 @@ def write_sku_report_tab(sh, gc, sorted_months,
     _total_rev   = sum(v["revenue"] for v in _sales.values()) or 1  # avoid div/0
     _period_label = f"{report_days}d"
 
-    # Build SKU normalization map from product master:
-    # maps any stripped/cased variant → canonical uppercase Shopify SKU.
-    # When a report SKU doesn't directly hit sku_data (e.g. parsed from notes
-    # with slight formatting differences), this resolves it via the master.
-    _sku_norm: dict = {}
-    for canonical in sku_info.keys():           # keys are already uppercased
-        _sku_norm[canonical] = canonical
-        _sku_norm[canonical.replace("-", "").replace(" ", "")] = canonical
+    # ── SKU normalization helpers ─────────────────────────────────────────────
+    # Build lookup maps from product master so a report SKU (which may come
+    # from note-parsing with slight formatting differences) resolves to the
+    # canonical uppercase Shopify SKU before hitting sku_data.
 
-    def _canonical(raw: str) -> str:
-        upper = raw.upper()
-        return _sku_norm.get(upper) or _sku_norm.get(upper.replace("-", "").replace(" ", "")) or upper
+    import re as _re
+
+    def _scrub(s: str) -> str:
+        """Reduce a SKU to its bare alphanumeric core for fuzzy matching."""
+        s = s.upper()
+        s = s.replace("–", "-").replace("—", "-")  # en/em dash → hyphen
+        s = s.replace("_", "-")                              # underscore → hyphen
+        s = _re.sub(r"[^A-Z0-9]", "", s)                    # strip everything non-alnum
+        return s
+
+    # Map every scrubbed/variant form → canonical uppercase SKU
+    _sku_norm: dict = {}
+    # Map (title_upper, variant_upper) → canonical uppercase SKU
+    _title_norm: dict = {}
+
+    for canonical, meta in sku_info.items():   # keys already uppercased
+        for key in (
+            canonical,                          # exact uppercase
+            canonical.replace("-", ""),         # no hyphens
+            canonical.replace("-", " "),        # hyphens → spaces
+            canonical.replace("_", "-"),        # underscores → hyphens
+            _scrub(canonical),                  # fully stripped
+        ):
+            _sku_norm.setdefault(key, canonical)
+
+        title   = meta.get("title",   "").upper().strip()
+        variant = meta.get("variant", "").upper().strip()
+        if title:
+            _title_norm.setdefault((title, variant), canonical)
+            _title_norm.setdefault((title, ""),       canonical)
+
+    def _canonical(raw: str, title: str = "", variant: str = "") -> str:
+        """
+        Resolve raw → canonical Shopify SKU via a multi-step fallback chain:
+        1. Exact uppercase
+        2. No hyphens / spaces stripped
+        3. Underscores → hyphens
+        4. En/em-dash → hyphen
+        5. Fully stripped alphanumeric core
+        6. Direct hit in sku_data (product master may be stale)
+        7. Product title + variant title reverse lookup
+        """
+        upper = raw.upper().strip()
+        # Steps 1-5 via _sku_norm
+        for candidate in (
+            upper,
+            upper.replace("-", ""),
+            upper.replace("-", " "),
+            upper.replace("_", "-"),
+            upper.replace("–", "-").replace("—", "-"),
+            _scrub(upper),
+        ):
+            if candidate in _sku_norm:
+                return _sku_norm[candidate]
+        # Step 6: direct hit in sku_data (bypasses product master entirely)
+        if upper in _sales:
+            return upper
+        if _scrub(upper) in {_scrub(k) for k in _sales}:
+            for k in _sales:
+                if _scrub(k) == _scrub(upper):
+                    return k
+        # Step 7: product title + variant reverse lookup
+        t = title.upper().strip()
+        v = variant.upper().strip()
+        if t:
+            hit = _title_norm.get((t, v)) or _title_norm.get((t, ""))
+            if hit:
+                return hit
+        return upper   # final fallback: uppercase as-is
 
     def _row(sku, category, monthly):
         info     = sku_info.get(sku.upper(), {})
-        s        = _sales.get(_canonical(sku)) or {}
+        canon    = _canonical(sku, info.get("title", ""), info.get("variant", ""))
+        s        = _sales.get(canon) or {}
         orders   = s.get("orders", "")
         revenue  = round(s.get("revenue", 0), 2) if s else ""
         contrib  = round(s["revenue"] / _total_rev * 100, 2) if s.get("revenue") else ""
