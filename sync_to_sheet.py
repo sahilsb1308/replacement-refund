@@ -1487,9 +1487,22 @@ def write_sku_report_tab(sh, gc, sorted_months,
     _total_rev   = sum(v["revenue"] for v in _sales.values()) or 1  # avoid div/0
     _period_label = f"{report_days}d"
 
+    # Build SKU normalization map from product master:
+    # maps any stripped/cased variant → canonical uppercase Shopify SKU.
+    # When a report SKU doesn't directly hit sku_data (e.g. parsed from notes
+    # with slight formatting differences), this resolves it via the master.
+    _sku_norm: dict = {}
+    for canonical in sku_info.keys():           # keys are already uppercased
+        _sku_norm[canonical] = canonical
+        _sku_norm[canonical.replace("-", "").replace(" ", "")] = canonical
+
+    def _canonical(raw: str) -> str:
+        upper = raw.upper()
+        return _sku_norm.get(upper) or _sku_norm.get(upper.replace("-", "").replace(" ", "")) or upper
+
     def _row(sku, category, monthly):
         info     = sku_info.get(sku.upper(), {})
-        s        = _sales.get(sku.upper()) or {}
+        s        = _sales.get(_canonical(sku)) or {}
         orders   = s.get("orders", "")
         revenue  = round(s.get("revenue", 0), 2) if s else ""
         contrib  = round(s["revenue"] / _total_rev * 100, 2) if s.get("revenue") else ""
