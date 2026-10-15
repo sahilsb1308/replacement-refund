@@ -230,7 +230,7 @@ def fetch_sku_sales(year: int, month: int, period_end_day: int) -> dict:
         for e in result["edges"]:
             for li in e["node"]["lineItems"]["edges"]:
                 n   = li["node"]
-                sku = (n.get("sku") or "").strip()
+                sku = (n.get("sku") or "").strip().upper()
                 if not sku:
                     continue
                 qty   = int(n.get("quantity") or 0)
@@ -1489,7 +1489,7 @@ def write_sku_report_tab(sh, gc, sorted_months,
 
     def _row(sku, category, monthly):
         info     = sku_info.get(sku.upper(), {})
-        s        = _sales.get(sku) or _sales.get(sku.upper()) or {}
+        s        = _sales.get(sku.upper()) or {}
         orders   = s.get("orders", "")
         revenue  = round(s.get("revenue", 0), 2) if s else ""
         contrib  = round(s["revenue"] / _total_rev * 100, 2) if s.get("revenue") else ""
